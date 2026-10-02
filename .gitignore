@@ -1,0 +1,76 @@
+# ===== Gradle =====
+.gradle/
+.kotlin/
+__pycache__/
+build/
+captures/
+.externalNativeBuild/
+.cxx/
+local.properties
+
+# ===== Android Studio / IDE =====
+.idea/
+*.iml
+*.ipr
+*.iws
+.navigation/
+out/
+
+# ===== Android 构建产物 =====
+*.apk
+*.aab
+*.ap_
+*.dex
+*.class
+bin/
+gen/
+release/
+debug/
+
+# ===== 签名与密钥（绝不允许入库）=====
+*.jks
+*.keystore
+*.p8
+*.p12
+*.pfx
+key.properties
+signing.properties
+keystore.properties
+
+# ===== 本地配置与凭据 =====
+.env
+*.local
+secrets.properties
+gradle.properties.local
+local.properties
+
+# ===== 日志与崩溃报告 =====
+*.log
+*.hprof
+logcat*.txt
+
+# ===== 系统文件 =====
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ===== 本项目的本地产物 =====
+docs/_local/
+releases/
+tools/output/
+
+# 私人过程与本地 AI 交接记录；正式项目说明为 docs/PROJECT.md
+/docs/[0-9][0-9]-*.md
+/docs/audit/
+/TASK_STATE.md
+/handoff/
+/design/*.md
+
+# 交接包 zip（可由 tools/pack_handoff.py 再生，不必入库）
+handoff/pack/
+
+# ===== WorkBuddy 工作区数据 =====
+.workbuddy/
+
+# 探针抓下来的媒体样本（本地复现用，勿入库）
+tmp/

@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+      应用显示名。中文 / 英文两种系统语言下都是 **BBTV** ——
+      2026-09-29 少爷要求统一改成 BBTV（原名是中文「哔哩姬」/ 英文 BiliG-Tv）。
+      英文那份是同名副本，见 values-en/strings.xml。
+    -->
+    <string name="app_name">BBTV</string>
+</resources>

@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+      应用显示名（系统语言为英文时）。与 values/strings.xml 一样都是 **BBTV** ——
+      2026-09-29 少爷要求统一改成 BBTV（原名 BiliG-Tv）。
+      注：包名始终是 top.bilitv，不受显示名影响（BiliG-Tv 带连字符，本就不是合法 Java 包名）。
+    -->
+    <string name="app_name" translatable="false">BBTV</string>
+</resources>

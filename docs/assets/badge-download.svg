@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="80" height="22" role="img" aria-label="下载 APK">
+  <title>下载 APK</title>
+  <rect width="40" height="22" fill="#555"/>
+  <rect x="40" width="40" height="22" fill="#009dcc"/>
+  <g fill="#fff" text-anchor="middle" font-family="Segoe UI,Microsoft YaHei,sans-serif" font-size="12">
+    <text x="20" y="15">下载</text>
+    <text x="60" y="15">APK</text>
+  </g>
+</svg>

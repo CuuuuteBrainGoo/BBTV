@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  日志分享用的路径白名单。
+  只放开 files/logs 一个目录 —— FileProvider 的原则是「只给必须给的那一个」，
+  写宽了等于把整个应用私有目录都暴露出去。
+-->
+<paths>
+    <external-files-path
+        name="logs"
+        path="logs/" />
+</paths>

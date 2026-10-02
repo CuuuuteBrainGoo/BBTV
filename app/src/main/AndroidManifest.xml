@@ -1,0 +1,65 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+
+    <uses-feature
+        android:name="android.software.leanback"
+        android:required="false" />
+    <uses-feature
+        android:name="android.hardware.touchscreen"
+        android:required="false" />
+
+    <!--
+      banner 是电视桌面用的横版大图（320x180），图标是手机/平板桌面用的方形图。
+      两套都要给：电视桌面认 banner，手机桌面认 icon，缺哪个哪边就是默认灰块。
+    -->
+    <application
+        android:name=".BiliTvApp"
+        android:allowBackup="false"
+        android:banner="@drawable/tv_banner"
+        android:hardwareAccelerated="true"
+        android:icon="@mipmap/ic_launcher"
+        android:isGame="false"
+        android:label="@string/app_name"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:theme="@style/Theme.BiliTv">
+
+        <activity
+            android:name=".MainActivity"
+            android:configChanges="keyboard|keyboardHidden|navigation|orientation|screenSize|screenLayout|smallestScreenSize|uiMode"
+            android:exported="true"
+            android:screenOrientation="landscape">
+            <!--
+              同时声明两个 launcher category：
+              - LEANBACK_LAUNCHER → 电视（Android TV）的桌面能识别
+              - LAUNCHER          → 手机/平板的桌面能识别（用于不方便接电视时先用手机会话验证）
+
+              两者都指向同一个 Activity，**只会有这一个入口**，不会出现重复图标。
+            -->
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LEANBACK_LAUNCHER" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <!--
+          日志分享出口。
+
+          App 跑在电视和手机上，两边都没有 adb 可接，出问题时只能靠「分享」把日志带出来。
+          authorities 用 applicationId 拼，避免和别的应用撞车。
+        -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
+    </application>
+
+</manifest>
