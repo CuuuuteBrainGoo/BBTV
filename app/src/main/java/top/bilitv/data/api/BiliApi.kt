@@ -34,7 +34,6 @@ import top.bilitv.data.model.PgcDetail
 import top.bilitv.data.model.PgcSeason
 import top.bilitv.data.model.PgcType
 import top.bilitv.data.model.PlayInfo
-import top.bilitv.data.model.UpUser
 import top.bilitv.data.model.UpVideoPage
 import top.bilitv.data.model.VideoDetail
 import top.bilitv.data.model.VideoRelation
@@ -43,6 +42,16 @@ import top.bilitv.data.model.requireActionResponse
 import top.bilitv.data.model.WeeklyIssue
 import top.bilitv.util.AppLog
 import org.json.JSONObject
+
+/** Opt-in list requests must distinguish a valid empty page from an API failure. */
+internal fun requireFeedSuccess(raw: String): String {
+    val root = JSONObject(raw)
+    val code = root.optInt("code", Int.MIN_VALUE)
+    if (code != 0) throw java.io.IOException(if (code == Int.MIN_VALUE) "接口响应格式异常" else "接口返回错误（$code）")
+    if (listOf(root.opt("data"), root.opt("result")).none { it is JSONObject || it is org.json.JSONArray })
+        throw java.io.IOException("接口缺少列表数据")
+    return raw
+}
 
 /**
  * 造一条 B 站 Cookie。
@@ -109,6 +118,7 @@ private val CREDENTIAL_COOKIE_NAMES = listOf("SESSDATA", "bili_jct", "DedeUserID
 class BiliApi(context: Context) {
 
     private val store = CredentialStore(context)
+    private val settings = top.bilitv.data.settings.SettingsStore(context)
 
     /**
      * Cookie 缓存。**必须是字段**：见 [ensureBuvid] —— 它会在运行期往里补一条。
@@ -248,7 +258,7 @@ class BiliApi(context: Context) {
              */
             val isLive = original.url.host.endsWith("live.bilibili.com") || original.url.host.endsWith(".chat.bilibili.com")
             val req = original.newBuilder()
-                .header("User-Agent", UA)
+                .header("User-Agent", original.header("User-Agent") ?: UA)
                 .header("Referer", if (isLive) "https://live.bilibili.com/" else "https://www.bilibili.com/")
                 .header("Origin", if (isLive) "https://live.bilibili.com" else "https://www.bilibili.com")
                 .header("Accept", "application/json, text/plain, */*")
@@ -257,6 +267,8 @@ class BiliApi(context: Context) {
         }
         .build()
 
+    private val guestClient by lazy { client.newBuilder().cookieJar(CookieJar.NO_COOKIES).build() }
+    private val appVideo by lazy { AppGrpcVideo(client) }
     private var imgKey: String? = null
     private var subKey: String? = null
     private var keyTs: Long = 0L
@@ -313,7 +325,10 @@ class BiliApi(context: Context) {
             } else {
                 AppLog.w(TAG, "finger/spi 没给 b_3，跳过")
             }
-        }.onFailure { AppLog.w(TAG, "取 buvid3 失败：${it.javaClass.simpleName}") }
+        }.onFailure {
+            if (it is CancellationException) throw it
+            AppLog.w(TAG, "取 buvid3 失败：${it.javaClass.simpleName}")
+        }
     }
 
     suspend fun getRaw(path: String, params: Map<String, String> = emptyMap()): String =
@@ -338,22 +353,18 @@ class BiliApi(context: Context) {
         params: Map<String, String> = emptyMap(),
         base: String = BASE,
         maxBytes: Int = Int.MAX_VALUE,
+        anonymous: Boolean = false,
+        userAgent: String? = null,
     ): ByteArray =
         withContext(Dispatchers.IO) {
-            syncCookiesFromBus()
+            if (!anonymous) syncCookiesFromBus()
             val url = "$base$path".toHttpUrl().newBuilder().apply {
                 params.forEach { (k, v) -> addQueryParameter(k, v) }
             }.build()
 
-            val response = try {
-                client.newCall(Request.Builder().url(url).get().build()).execute()
-            } catch (t: Throwable) {
-                // 连都连不上：DNS / 超时 / TLS / 无网络，异常类型本身就说明问题
-                AppLog.e(TAG, "请求异常 @ $path", t)
-                throw t
-            }
-
-            response.use { resp ->
+            val call = (if (anonymous) guestClient else client).newCall(Request.Builder().url(url).get()
+                .apply { userAgent?.let { header("User-Agent", it) } }.build())
+            try { call.readCancellable { resp ->
                 val body = if (maxBytes == Int.MAX_VALUE) resp.body?.bytes() ?: ByteArray(0) else {
                     require(maxBytes > 0)
                     val source = resp.body?.source()
@@ -369,6 +380,10 @@ class BiliApi(context: Context) {
                     error("HTTP ${resp.code} @ $path")
                 }
                 body
+            } } catch (e: CancellationException) { throw e }
+            catch (e: Exception) {
+                AppLog.e(TAG, "请求异常 @ $path", e)
+                throw e
             }
         }
 
@@ -382,32 +397,36 @@ class BiliApi(context: Context) {
      * 和 WBI 那套毫无关系，路径也不在 `api.bilibili.com`。
      * 硬塞进一个方法里，早晚会有人把 WBI 签名套到登录接口上。
      */
-    suspend fun postForm(base: String, path: String, params: Map<String, String>): String =
+    private suspend fun qrPostForm(base: String, path: String, params: Map<String, String>): String =
         withContext(Dispatchers.IO) {
             val form = okhttp3.FormBody.Builder().apply {
                 params.forEach { (k, v) -> add(k, v) }
             }.build()
 
-            val response = try {
-                client.newCall(Request.Builder().url(base + path).post(form).build()).execute()
-            } catch (t: Throwable) {
-                AppLog.e(TAG, "POST 异常 @ $path", t)
-                throw t
-            }
-
-            response.use { resp ->
+            client.newCall(Request.Builder().url(base + path).post(form).build()).readCancellable { resp ->
                 val body = resp.body?.string().orEmpty()
                 if (!resp.isSuccessful) {
-                    AppLog.e(TAG, "HTTP ${resp.code} @ POST $path | ${body.take(200)}")
                     error("HTTP ${resp.code} @ POST $path")
                 }
                 body
             }
         }
 
-    /** 视频详情（无需签名） */
-    suspend fun videoDetail(bvid: String): VideoDetail? =
-        runCatching { parseVideoDetail(getRaw(PATH_VIEW, mapOf("bvid" to bvid))) }.getOrNull()
+    /** Supported UGC App details share playback's setting; PGC details remain Web. */
+    suspend fun videoDetail(bvid: String): VideoDetail? = try {
+        detailWithFallback(settings.videoApiSource, bvid) { source ->
+            val result = if (source == top.bilitv.data.settings.VideoApiSource.APP) {
+                requireAppCredentialOrGuest()
+                appVideo.detail(bvid, store.accessKey, store.buvid)
+            } else {
+                val raw = getRaw(PATH_VIEW, mapOf("bvid" to bvid))
+                withContext(Dispatchers.Default) { parseVideoDetail(raw) }
+            }
+            if (result != null) AppLog.i(TAG, "实际详情来源=${source.name}")
+            result
+        }
+    } catch (e: CancellationException) { throw e }
+    catch (e: Exception) { AppLog.w(TAG, "视频详情暂不可用：${e.javaClass.simpleName}"); null }
 
     fun canWriteVideoActions(): Boolean = !store.sessdata.isNullOrBlank() && !store.biliJct.isNullOrBlank()
 
@@ -506,10 +525,37 @@ class BiliApi(context: Context) {
      * `fnval=4048` 要 DASH 音画分离；`fourk=1` 放开 4K。
      * 实测游客态即可返回，清晰度上限 480P；高画质依赖登录。
      */
-    suspend fun playInfo(bvid: String, cid: Long): PlayInfo? =
-        runCatching {
-            parsePlayInfo(get(PATH_PLAYURL, playUrlParams(bvid = bvid, cid = cid)))
-        }.getOrNull()
+    suspend fun playInfo(bvid: String, cid: Long, aid: Long = 0L,
+        source: top.bilitv.data.settings.VideoApiSource = settings.videoApiSource,
+        accepts: (PlayInfo) -> Boolean = { true }): PlayInfo? = playbackRequest(source, accepts) { source ->
+        if (source == top.bilitv.data.settings.VideoApiSource.APP) {
+            requireAppCredentialOrGuest()
+            appVideo.play(aid, cid, bvid, 0, settings.preferHevc && !settings.forceAvc,
+                store.accessKey, store.buvid)
+        } else parsePlayInfo(get(PATH_PLAYURL, playUrlParams(bvid = bvid, cid = cid)))
+    }
+
+    private fun requireAppCredentialOrGuest() {
+        // A Web QR session is not an App access_key. Preserve its rights through Web instead of guest downgrading.
+        if (!store.sessdata.isNullOrBlank() && store.accessKey.isNullOrBlank())
+            throw java.io.IOException("当前登录未提供 App 凭据")
+    }
+
+    private suspend fun playbackRequest(source: top.bilitv.data.settings.VideoApiSource, accepts: (PlayInfo) -> Boolean,
+        request: suspend (top.bilitv.data.settings.VideoApiSource) -> PlayInfo?): PlayInfo? = try {
+        playbackWithFallback(source, accepts) { source ->
+            try { request(source)?.let(top.bilitv.data.model.PlaybackPreview::requireBound) } catch (e: Exception) {
+                if (e is CancellationException) throw e
+                AppLog.w(TAG, "${source.name} 取流失败：${e.javaClass.simpleName}")
+                throw e
+            }
+        }.also { info ->
+            if (info != null) AppLog.i(TAG, "实际取流来源=${info.source.name} 试看=${info.isPreview}")
+        }
+    } catch (e: Exception) {
+        if (e is CancellationException) throw e
+        AppLog.e(TAG, "播放接口失败", e); null
+    }
 
     /**
      * 取流公共参数。**UGC 和 PGC 共用**，避免两处写重复的"风控字段"而漏改一边。
@@ -565,22 +611,36 @@ class BiliApi(context: Context) {
         return tracks
     }
 
+    /** Only paid/charging content needs this extra read. A generic purchase toast is not an entitlement flag. */
+    suspend fun previewState(bvid: String, cid: Long): Boolean? = try {
+        val params = mapOf("bvid" to bvid, "cid" to "$cid")
+        val raw = try { get("/x/player/wbi/v2", params).also { top.bilitv.data.model.explicitPreviewState(it) } }
+            catch (e: Exception) {
+                if (e is CancellationException) throw e
+                getRaw("/x/player/v2", params)
+            }
+        top.bilitv.data.model.explicitPreviewState(raw)
+    } catch (e: Exception) {
+        if (e is CancellationException) throw e
+        AppLog.w(TAG, "试看元数据暂不可用：${e.javaClass.simpleName}"); null
+    }
+
     private val subtitleClient by lazy { client.newBuilder().cookieJar(CookieJar.NO_COOKIES)
         .followRedirects(false).followSslRedirects(false).callTimeout(10, java.util.concurrent.TimeUnit.SECONDS).build() }
 
     suspend fun subtitleBody(track: top.bilitv.data.model.SubtitleTrack): top.bilitv.data.model.SubtitleTimeline =
         withContext(Dispatchers.IO) {
             val url = top.bilitv.data.model.subtitleUrl(track.url) ?: error("字幕地址无效")
-            subtitleClient.newCall(Request.Builder().url(url).build()).execute().use { response ->
+            val bytes = subtitleClient.newCall(Request.Builder().url(url).build()).readCancellable { response ->
                 if (!response.isSuccessful) error("字幕下载失败（HTTP ${response.code}）")
                 val source = response.body?.source() ?: error("字幕正文为空")
                 val buffer = okio.Buffer()
                 val limit = 4L * 1024 * 1024
                 while (buffer.size <= limit && source.read(buffer, minOf(8_192, limit + 1 - buffer.size)) != -1L) { }
                 require(buffer.size <= limit) { "字幕正文超过 4 MiB" }
-                val bytes = buffer.readByteArray()
-                withContext(Dispatchers.Default) { top.bilitv.data.model.SubtitleTimeline.parse(bytes.toString(Charsets.UTF_8)) }
+                buffer.readByteArray()
             }
+            withContext(Dispatchers.Default) { top.bilitv.data.model.SubtitleTimeline.parse(bytes.toString(Charsets.UTF_8)) }
         }
 
     suspend fun danmakuMetadata(cid: Long, aid: Long): top.bilitv.data.danmaku.DanmakuCloudProfile {
@@ -602,33 +662,58 @@ class BiliApi(context: Context) {
      * 失败了界面只会显示「接口可能变了或网络不通」——两个方向完全相反却看不出区别。
      * 所以失败记录异常、返回空记录响应原文，让日志里能直接看到服务端说了什么。
      */
-    suspend fun feedRecommend(freshIdx: Int = 1): List<FeedItem> =
-        try {
-            val raw = get(
-                PATH_FEED,
-                mapOf(
-                    "ps" to "12",
-                    "fresh_type" to "3",
-                    "fresh_idx" to freshIdx.toString(),
-                )
-            )
-            val list = parseFeedRecommend(raw)
-            if (list.isEmpty()) {
-                AppLog.w(TAG, "推荐流解析出 0 条 | 响应前 300 字: ${raw.take(300)}")
-            }
-            list
-        } catch (t: Throwable) {
-            AppLog.e(TAG, "推荐流失败", t)
-            emptyList()
+    suspend fun feedRecommend(freshIdx: Int = 1, strict: Boolean = false): List<FeedItem> = try {
+        recommendPage(freshIdx, top.bilitv.data.settings.RecommendSource.WEB, true).items
+    } catch (e: Exception) {
+        if (e is CancellationException || strict) throw e
+        AppLog.e(TAG, "推荐流失败", e); emptyList()
+    }
+
+    suspend fun recommendPage(freshIdx: Int, source: top.bilitv.data.settings.RecommendSource,
+        personalized: Boolean): RecommendPage = recommendWithFallback(source) { requested ->
+        val index = freshIdx.coerceAtLeast(1).toString()
+        val raw = if (requested == top.bilitv.data.settings.RecommendSource.APP) {
+            val params = mutableMapOf("idx" to index, "mobi_app" to "android_hd", "build" to "2020100",
+                "ts" to (System.currentTimeMillis() / 1000).toString())
+            if (personalized) store.accessKey?.takeIf { it.isNotBlank() }?.let { params["access_key"] = it }
+            val signed = top.bilitv.data.auth.AppSign.sign(params, "dfca71928277209b", "b5475a8825547a4fc26c7d518eaaa02e")
+            String(getRawBytes("/x/v2/feed/index", signed, "https://app.bilibili.com", anonymous = true,
+                userAgent = "Mozilla/5.0 BiliDroid/2.2.0 os/android mobi_app/android_hd build/2020100"), Charsets.UTF_8)
+        } else {
+            val params = mapOf("ps" to "12", "fresh_type" to "3", "fresh_idx" to index)
+            if (personalized) try {
+                val body = get(PATH_FEED, params)
+                withContext(Dispatchers.Default) { requireFeedSuccess(body) }
+            } catch (e: Exception) {
+                if (e is CancellationException) throw e
+                AppLog.w(TAG, "网页推荐切换备用线路：${e.javaClass.simpleName}")
+                getRaw("/x/web-interface/index/top/feed/rcmd", params + mapOf("feed_version" to "V1", "plat" to "1"))
+            } else String(getRawBytes("/x/web-interface/index/top/feed/rcmd",
+                params + mapOf("feed_version" to "V1", "plat" to "1"), anonymous = true), Charsets.UTF_8)
         }
+        val list = withContext(Dispatchers.Default) {
+            requireFeedSuccess(raw)
+            val data = JSONObject(raw).optJSONObject("data") ?: throw java.io.IOException("推荐数据格式异常")
+            if (requested == top.bilitv.data.settings.RecommendSource.APP) {
+                if (data.optJSONArray("items") == null) throw java.io.IOException("App 推荐缺少卡片列表")
+                parseAppFeedRecommend(raw)
+            } else {
+                if (data.optJSONArray("item") == null && data.optJSONArray("items") == null)
+                    throw java.io.IOException("网页推荐缺少卡片列表")
+                parseFeedRecommend(raw)
+            }
+        }
+        AppLog.i(TAG, "推荐来源=${requested.name} 个性化=$personalized 条数=${list.size}")
+        list
+    }
 
     /**
      * 热门 `/x/web-interface/popular`。
      *
      * 游客态可用、**不用签名**（2026-09-29 探针实测：20 条，223ms）。
      */
-    suspend fun popular(pn: Int = 1, ps: Int = 20): List<FeedItem> =
-        feedOrLog("热门", PATH_POPULAR, mapOf("pn" to pn.toString(), "ps" to ps.toString())) {
+    suspend fun popular(pn: Int = 1, ps: Int = 20, strict: Boolean = false): List<FeedItem> =
+        feedOrLog("热门", PATH_POPULAR, mapOf("pn" to pn.toString(), "ps" to ps.toString()), strict) {
             parsePopular(it)
         }
 
@@ -638,12 +723,12 @@ class BiliApi(context: Context) {
      * 替代已下线的 `dynamic/region`（那个现在所有分区都 -404）。
      * 分区编号见 `docs/15`：影视相关是 11(电视剧) 13(番剧) 23(电影) 177(纪录片)。
      */
-    suspend fun regionNewList(rid: Int, pn: Int = 1, ps: Int = 20): List<FeedItem> =
+    suspend fun regionNewList(rid: Int, pn: Int = 1, ps: Int = 20, strict: Boolean = false): List<FeedItem> =
         feedOrLog("分区$rid", PATH_NEWLIST, mapOf(
             "rid" to rid.toString(),
             "pn" to pn.toString(),
             "ps" to ps.toString(),
-        )) { parseRegionNewList(it) }
+        ), strict) { parseRegionNewList(it) }
 
     /**
      * 「每周必看」当期视频 `/x/web-interface/popular/series/one`。
@@ -651,15 +736,16 @@ class BiliApi(context: Context) {
      * @param number 期号。传 0 表示不指定 —— 接口会当作当期。
      *   不要自己去算"当前是第几期"，那个算法会随年份/周数错位。
      */
-    suspend fun weeklyOne(number: Int = 0): List<FeedItem> {
+    suspend fun weeklyOne(number: Int = 0, strict: Boolean = false): List<FeedItem> {
         val params = if (number > 0) mapOf("number" to number.toString()) else emptyMap()
-        return feedOrLog("每周必看#$number", PATH_WEEKLY_ONE, params) { parseWeeklyOne(it) }
+        return feedOrLog("每周必看#$number", PATH_WEEKLY_ONE, params, strict) { parseWeeklyOne(it) }
     }
 
     /** 「每周必看」期号列表 `/x/web-interface/popular/series/list`（不用签名） */
     suspend fun weeklyIssues(): List<WeeklyIssue> = try {
-        parseWeeklySeries(getRaw(PATH_WEEKLY_LIST))
+        withContext(Dispatchers.Default) { parseWeeklySeries(getRaw(PATH_WEEKLY_LIST)) }
     } catch (t: Throwable) {
+        if (t is CancellationException) throw t
         AppLog.e(TAG, "每周必看期号列表失败", t)
         emptyList()
     }
@@ -673,8 +759,8 @@ class BiliApi(context: Context) {
      *
      * `order=3` = 按追番人数排序（热度），`st=1` = 全部状态。
      */
-    suspend fun pgcIndex(type: PgcType, page: Int = 1, ps: Int = 24, filters: Map<String,String> = emptyMap()): List<PgcSeason> =
-        feedOrLog("PGC ${type.label}", PATH_PGC_INDEX, mapOf(
+    suspend fun pgcIndexPage(type: PgcType, page: Int = 1, ps: Int = 24, filters: Map<String,String> = emptyMap()): top.bilitv.data.model.PgcIndexPage {
+        val raw = getRaw(PATH_PGC_INDEX, mapOf(
             "season_type" to type.id.toString(),
             "type" to "1",
             "page" to page.toString(),
@@ -692,13 +778,17 @@ class BiliApi(context: Context) {
             "season_status" to "-1",
             "quarter" to "-1",
             "is_special" to "0",
-        ) + filters) { parsePgcIndex(it) }
+        ) + filters)
+        return withContext(Dispatchers.Default) { parsePgcIndexPage(raw, page, ps) }
+    }
 
     suspend fun pgcFilters(type: PgcType): List<top.bilitv.data.model.PgcFilterField> =
-        parsePgcFilters(getRaw("/pgc/season/index/condition", mapOf("season_type" to "${type.id}", "type" to "1")))
+        withContext(Dispatchers.Default) {
+            parsePgcFilters(getRaw("/pgc/season/index/condition", mapOf("season_type" to "${type.id}", "type" to "1")))
+        }
 
     suspend fun pgcRank(type: PgcType): List<PgcSeason> =
-        feedOrLog("${type.label}热播榜", "/pgc/season/rank/web/list", mapOf("season_type" to "${type.id}", "day" to "3")) { parsePgcIndex(it) }
+        feedOrLog("${type.name}热播榜", "/pgc/season/rank/web/list", mapOf("season_type" to "${type.id}", "day" to "3")) { parsePgcIndex(it) }
 
     suspend fun pgcBanner(type: PgcType): List<PgcSeason> {
         val path = when (type) {
@@ -715,12 +805,15 @@ class BiliApi(context: Context) {
      * 游客态实测可用（Phase 0 清单第 5 项，20 条，未触发风控）。
      * 但仍按"可能被风控"来写：失败返回空，日志里留服务端原话。
      */
-    suspend fun searchVideo(keyword: String, page: Int = 1): List<FeedItem> =
-        feedOrLog("搜索[$keyword]", PATH_SEARCH, mapOf(
+    suspend fun searchVideoPage(keyword: String, page: Int = 1): top.bilitv.data.model.SearchVideoPage {
+        require(keyword.isNotBlank() && page > 0)
+        val raw = get(PATH_SEARCH, mapOf(
             "keyword" to keyword,
             "search_type" to "video",
             "page" to page.toString(),
-        )) { parseSearchVideo(it) }
+        ))
+        return withContext(Dispatchers.Default) { parseSearchVideoPage(raw, page) }
+    }
 
     /**
      * 热搜词 `/x/web-interface/search/square`。
@@ -728,9 +821,24 @@ class BiliApi(context: Context) {
      * 失败**不算错误**：热搜只是"帮用户省掉打字"的辅助，没有它搜索照样能用，
      * 所以这里静默返回空列表，不记异常 —— 否则每次断网进搜索页都会刷一条 error 日志。
      */
-    suspend fun hotSearch(limit: Int = 12): List<String> =
-        runCatching { parseHotSearch(getRaw(PATH_HOT_SEARCH, mapOf("limit" to limit.toString())), limit) }
-            .getOrDefault(emptyList())
+    /** Read-only video comments, opaque WBI cursor; no automatic retry or account writes. */
+    suspend fun comments(aid: Long, newest: Boolean = false, offset: String = ""): top.bilitv.data.model.CommentPage {
+        require(aid > 0)
+        return withContext(Dispatchers.Default) { top.bilitv.data.model.parseCommentPage(get("/x/v2/reply/wbi/main", mapOf(
+            "type" to "1", "oid" to aid.toString(), "mode" to if (newest) "2" else "3",
+            "pagination_str" to top.bilitv.data.model.commentPagination(offset),
+            "plat" to "1", "web_location" to "1315875"))) }
+    }
+    suspend fun hotSearch(limit: Int = 12, strict: Boolean = false): List<String> = try {
+        val raw = getRaw(PATH_HOT_SEARCH, mapOf("limit" to limit.toString()))
+        withContext(Dispatchers.Default) {
+            check(JSONObject(raw).optInt("code", -1) == 0) { "热搜暂时加载失败" }
+            parseHotSearch(raw, limit)
+        }
+    } catch (e: Exception) {
+        if (strict || e is CancellationException) throw e
+        emptyList()
+    }
 
     /**
      * PGC 作品详情 `/pgc/view/web/season`（含全部剧集）。
@@ -744,7 +852,8 @@ class BiliApi(context: Context) {
         return try {
             val params = if (seasonId > 0L) mapOf("season_id" to seasonId.toString())
                 else mapOf("ep_id" to epId.toString())
-            val d = parsePgcDetail(getRaw(PATH_PGC_SEASON, params))
+            val raw = getRaw(PATH_PGC_SEASON, params)
+            val d = withContext(Dispatchers.Default) { parsePgcDetail(raw) }
             if (d == null) AppLog.w(TAG, "PGC 详情为空 season_id=$seasonId（未登录时属于正常现象）")
             d
         } catch (e: CancellationException) { throw e }
@@ -775,11 +884,20 @@ class BiliApi(context: Context) {
      * ⚠️ 都返回 `code=0` + 空 data 时（未登录），三条都会是 null，
      * 这时**不要**把"三条都失败"报成"接口挂了" —— 见调用方的文案分支。
      */
-    suspend fun pgcPlayInfo(epId: Long, cid: Long): PlayInfo? {
+    suspend fun pgcPlayInfo(epId: Long, cid: Long,
+        source: top.bilitv.data.settings.VideoApiSource = settings.videoApiSource,
+        accepts: (PlayInfo) -> Boolean = { true }): PlayInfo? = playbackRequest(source, accepts) { source ->
+        if (source == top.bilitv.data.settings.VideoApiSource.APP) {
+            requireAppCredentialOrGuest()
+            appVideo.play(0, cid, "", epId, settings.preferHevc && !settings.forceAvc,
+                store.accessKey, store.buvid)
+        } else pgcWebPlayInfo(epId, cid)
+    }
+
+    private suspend fun pgcWebPlayInfo(epId: Long, cid: Long): PlayInfo? {
         for (path in PGC_PLAYURL_PATHS) {
-            val r = runCatching {
-                parsePlayInfo(getRaw(path, playUrlParams(epId = epId, cid = cid)))
-            }.getOrNull()
+            val r = try { parsePlayInfo(getRaw(path, playUrlParams(epId = epId, cid = cid))) }
+                catch (e: Exception) { if (e is CancellationException) throw e; null }
             if (r != null && r.videos.isNotEmpty()) {
                 if (path != PGC_PLAYURL_PATHS.first()) {
                     AppLog.i(TAG, "PGC 取流：v1 不通，改用 $path 成功")
@@ -800,20 +918,20 @@ class BiliApi(context: Context) {
      *
      * 这是一个**可判别**的信号（2026-09-29 实测，见 `tools/probe_follow.py`），
      * 和 PGC 那种 `code=0 + data=null` 不一样 —— 这里至少能确定"是没登录"。
-     * 但为了界面文案统一，仍然**不用 `-101` 当判据**：判据只看
-     * 「列表空 + [isLoggedIn] 为假」，因为服务端哪天把码换掉，
-     * 我们就又要改一遍所有界面的分支。
+     * 非零 code 及坏响应保留失败，不能假装为零关注。页面离开会取消读取。
      *
      * @param vmid 自己的 mid。传 0 时接口会按"当前登录用户"处理。
      */
-    suspend fun followingList(vmid: Long = 0L, pn: Int = 1, ps: Int = 30): List<UpUser> =
-        feedOrLog("关注列表", PATH_FOLLOWINGS, mapOf(
+    suspend fun followingPage(vmid: Long = 0L, pn: Int = 1, ps: Int = 30): top.bilitv.data.model.FollowingPage {
+        val json = getRaw(PATH_FOLLOWINGS, mapOf(
             "vmid" to vmid.toString(),
             "pn" to pn.toString(),
             "ps" to ps.toString(),
             "order" to "desc",
             "order_type" to "attention",
-        )) { parseFollowings(it) }
+        ))
+        return withContext(Dispatchers.Default) { parseFollowingPage(json, pn, ps) }
+    }
 
     /**
      * 某个 UP 主的投稿列表 `/x/space/wbi/arc/search`。
@@ -837,10 +955,9 @@ class BiliApi(context: Context) {
                 "platform" to "web",
                 "web_location" to "1550101",
             ))
-            val items = parseUpVideos(raw)
-            val total = parseUpVideoCount(raw)
-            if (items.isEmpty()) AppLog.w(TAG, "UP$mid 投稿解析出 0 条 | 响应前 300 字: ${raw.take(300)}")
-            UpVideoPage(items, total)
+            val page = withContext(Dispatchers.Default) { parseUpVideoPage(raw, pn, ps) }
+            if (page.items.isEmpty()) AppLog.w(TAG, "UP$mid 投稿解析出0条，页=$pn，还有页=${page.hasMore}")
+            page
         } catch (e: CancellationException) {
             throw e
         } catch (t: Throwable) {
@@ -860,10 +977,10 @@ class BiliApi(context: Context) {
         }
 
     suspend fun relatedVideos(bvid: String): List<FeedItem>? =
-        parseRelatedVideos(getRaw("/x/web-interface/archive/related", mapOf("bvid" to bvid)))
+        withContext(Dispatchers.Default) { parseRelatedVideos(getRaw("/x/web-interface/archive/related", mapOf("bvid" to bvid))) }
 
     suspend fun relatedSeasons(seasonId: Long): List<FeedItem>? =
-        parseRelatedSeasons(getRaw("/pgc/season/web/related/recommend", mapOf("season_id" to seasonId.toString())))
+        withContext(Dispatchers.Default) { parseRelatedSeasons(getRaw("/pgc/season/web/related/recommend", mapOf("season_id" to seasonId.toString()))) }
 
     /**
      * 动态流 `/x/polymer/web-dynamic/v1/feed/all` —— 侧栏「动态」页的唯一数据源。
@@ -909,14 +1026,15 @@ class BiliApi(context: Context) {
                 "offset" to offset,
             ),
         )
-        val feed = parseDynamicFeed(raw)
+        val feed = withContext(Dispatchers.Default) { parseDynamicFeed(raw) }
         if (feed.items.isEmpty()) {
             // 空列表的原因千差万别（没登录 / 全是非视频动态 / 接口改结构了），
             // 把服务端的原话和码一起记下来，别让人去猜。
-            AppLog.w(TAG, "动态解析出 0 条（code=${feed.code}）| 响应前 300 字: ${raw.take(300)}")
+            AppLog.w(TAG, "动态解析出0条（code=${feed.code}，还有页=${feed.hasMore}）")
         }
         feed
     } catch (t: Throwable) {
+        if (t is CancellationException) throw t
         AppLog.e(TAG, "动态流失败", t)
         DynamicFeed(CODE_REQUEST_FAILED, emptyList(), "", false)
     }
@@ -958,11 +1076,12 @@ class BiliApi(context: Context) {
      * 它返回 `code=-101` **但同时给一份 `data{isLogin:false}`**。
      * 所以这里不能用"code != 0 就是错"来判断 —— 详见 [parseMyProfile] 的说明。
      *
-     * @return 永远不抛异常。拿不到就是 [MyProfileResult.Unsupported]。
+     * @return 请求失败返回 [MyProfileResult.Unsupported]，协程取消正常向上传递。
      */
     suspend fun myProfile(): MyProfileResult = try {
         parseMyProfile(getRaw(NAV))
-    } catch (t: Throwable) {
+    } catch (t: Exception) {
+        if (t is CancellationException) throw t
         AppLog.w(TAG, "账号资料失败：${t.javaClass.simpleName}")
         MyProfileResult.Unsupported
     }
@@ -975,7 +1094,8 @@ class BiliApi(context: Context) {
      */
     suspend fun myStat(): MyStat? = try {
         parseMyStat(getRaw(PATH_NAV_STAT))
-    } catch (t: Throwable) {
+    } catch (t: Exception) {
+        if (t is CancellationException) throw t
         AppLog.w(TAG, "账号计数失败：${t.javaClass.simpleName}")
         null
     }
@@ -1018,11 +1138,11 @@ class BiliApi(context: Context) {
      * ⚠️ 响应形状见 [parseLiveFollowing]：`data` 是对象、列表在 `data.list`、
      * 每条外面包一层 `room_info` —— 和另外两个列表接口**都不一样**。
      */
-    suspend fun liveFollowing(page: Int = 1, size: Int = 30): List<LiveRoom> =
+    suspend fun liveFollowing(page: Int = 1, size: Int = 30, strict: Boolean = false): List<LiveRoom> =
         liveOrLog("关注直播", PATH_LIVE_FOLLOWING, mapOf(
             "page" to page.toString(),
             "page_size" to size.toString(),
-        )) { raw ->
+        ), strict) { raw ->
             val list = parseLiveFollowing(raw)
             // ★ 0 条时把原文打出来 —— 这个接口没文档，形状只能实测（见 parseLiveFollowing 的说明）
             if (list.isEmpty()) AppLog.w(TAG, "关注直播 0 条 | 响应前 300 字: ${raw.take(300)}")
@@ -1036,11 +1156,11 @@ class BiliApi(context: Context) {
      * 新的 `/xlive/web-interface/v1/second/getList` 在游客态**稳定 -352**，
      * 别改回去。对照表见 `Parsers.kt` 里"直播"那一节的注释。
      */
-    suspend fun liveRecommend(page: Int = 1, size: Int = 30): List<LiveRoom> =
+    suspend fun liveRecommend(page: Int = 1, size: Int = 30, strict: Boolean = false): List<LiveRoom> =
         liveOrLog("推荐直播", PATH_LIVE_RECOMMEND, mapOf(
             "page" to page.toString(),
             "page_size" to size.toString(),
-        )) { parseLiveRecommend(it) }
+        ), strict) { parseLiveRecommend(it) }
 
     /**
      * 按分区取直播列表 `/room/v1/Area/getRoomList`（同样是老接口，同样因为新接口 -352）。
@@ -1053,13 +1173,14 @@ class BiliApi(context: Context) {
         areaId: Int = 0,
         page: Int = 1,
         size: Int = 30,
+        strict: Boolean = false,
     ): List<LiveRoom> = liveOrLog("分区直播", PATH_LIVE_AREA_ROOMS, mapOf(
         "parent_area_id" to parentAreaId.toString(),
         "area_id" to areaId.toString(),
         "sort_type" to "online",
         "page" to page.toString(),
         "page_size" to size.toString(),
-    )) { parseLiveAreaRooms(it) }
+    ), strict) { parseLiveAreaRooms(it) }
 
     /** 直播分区表 `/room/v1/Area/getList`。界面上的大区/子区标签靠它 */
     suspend fun liveAreas(): List<LiveArea> =
@@ -1171,13 +1292,15 @@ class BiliApi(context: Context) {
         what: String,
         path: String,
         params: Map<String, String>,
+        strict: Boolean = false,
         parse: (String) -> List<T>,
     ): List<T> = try {
         val raw = getLive(path, params)
-        val list = parse(raw)
+        val list = withContext(Dispatchers.Default) { parse(if (strict) requireFeedSuccess(raw) else raw) }
         if (list.isEmpty()) AppLog.w(TAG, "[直播] $what 解析出 0 条 | 响应前 300 字: ${raw.take(300)}")
         list
     } catch (t: Throwable) {
+        if (t is CancellationException || strict) throw t
         AppLog.e(TAG, "[直播] $what 失败", t)
         emptyList()
     }
@@ -1192,7 +1315,7 @@ class BiliApi(context: Context) {
      */
     suspend fun tvQrSession(): TvQrSession? = try {
         val ts = System.currentTimeMillis() / 1000
-        val body = postForm(
+        val body = qrPostForm(
             PASSPORT_BASE,
             PATH_TV_QR,
             TvLogin.sign(mapOf("appkey" to TvLogin.APPKEY, "local_id" to "0"), ts),
@@ -1201,13 +1324,14 @@ class BiliApi(context: Context) {
         val url = d?.optString("url").orEmpty()
         val code = d?.optString("auth_code").orEmpty()
         if (url.isBlank() || code.isBlank()) {
-            AppLog.w(TAG, "申请二维码返回异常：${body.take(200)}")
+            AppLog.w(TAG, "申请二维码返回异常 code=${JSONObject(body).optInt("code", -1)}")
             null
         } else {
             TvQrSession(url = url, authCode = code)
         }
     } catch (t: Throwable) {
-        AppLog.e(TAG, "申请二维码失败", t)
+        if (t is CancellationException) throw t
+        AppLog.w(TAG, "申请二维码失败：${t.javaClass.simpleName}")
         null
     }
 
@@ -1217,7 +1341,7 @@ class BiliApi(context: Context) {
      */
     suspend fun tvPoll(authCode: String): TvLoginPoll = try {
         val ts = System.currentTimeMillis() / 1000
-        val body = postForm(
+        val body = qrPostForm(
             PASSPORT_BASE,
             PATH_TV_POLL,
             TvLogin.sign(
@@ -1262,7 +1386,8 @@ class BiliApi(context: Context) {
             else -> TvLoginPoll.Failed(rawCode, json.optString("message"))
         }
     } catch (t: Throwable) {
-        AppLog.e(TAG, "轮询扫码结果失败", t)
+        if (t is CancellationException) throw t
+        AppLog.w(TAG, "轮询扫码结果失败：${t.javaClass.simpleName}")
         TvLoginPoll.Failed(-1, t.message ?: "网络异常")
     }
 
@@ -1279,8 +1404,9 @@ class BiliApi(context: Context) {
      * 配套探针 `tools/probe_fav.py`，登录后跑一次核对。
      */
     suspend fun favFolders(mid: Long): List<FavFolder>? = try {
-        parseFavFolders(getRaw(PATH_FAV_FOLDERS, mapOf("up_mid" to mid.toString())))
+        withContext(Dispatchers.Default) { parseFavFolders(getRaw(PATH_FAV_FOLDERS, mapOf("up_mid" to mid.toString()))) }
     } catch (t: Throwable) {
+        if (t is CancellationException) throw t
         /*
          * ★ 2026-09-30 改：**失败返回 `null`，不再返回 `emptyList()`**。
          *
@@ -1298,8 +1424,8 @@ class BiliApi(context: Context) {
      * `platform=web` 是**必须的** —— 不带它接口按移动端口径返回，
      * 字段会少一批（这是同类客户端的共同做法）。
      */
-    suspend fun favResources(mediaId: Long, pn: Int = 1, ps: Int = 20): List<FeedItem>? = try {
-        parseFavResources(
+    suspend fun favResourcePage(mediaId: Long, pn: Int = 1, ps: Int = 20): top.bilitv.data.model.FavResourcePage? = try {
+        withContext(Dispatchers.Default) { parseFavResourcePage(
             getRaw(
                 PATH_FAV_RESOURCES,
                 mapOf(
@@ -1312,7 +1438,7 @@ class BiliApi(context: Context) {
                     "type" to "0",
                 ),
             )
-        )
+        ) }
     } catch (t: Throwable) {
         /*
          * ★ 2026-09-30 改：**失败返回 `null`，不再返回 `emptyList()`**。
@@ -1364,7 +1490,8 @@ class BiliApi(context: Context) {
             WebQrSession(url = url, qrcodeKey = key)
         }
     } catch (t: Throwable) {
-        AppLog.e(TAG, "网页端申请二维码失败", t)
+        if (t is CancellationException) throw t
+        AppLog.w(TAG, "网页端申请二维码失败：${t.javaClass.simpleName}")
         null
     }
 
@@ -1419,7 +1546,8 @@ class BiliApi(context: Context) {
                 else -> WebLogin.Poll.Failed(bizCode, data.optString("message"))
             }
         } catch (t: Throwable) {
-            AppLog.e(TAG, "网页端轮询失败", t)
+            if (t is CancellationException) throw t
+            AppLog.w(TAG, "网页端轮询失败：${t.javaClass.simpleName}")
             WebLogin.Poll.Failed(-1, t.message ?: "网络异常")
         }
     }
@@ -1460,7 +1588,10 @@ class BiliApi(context: Context) {
             } else {
                 AppLog.i(TAG, "SSO 同步：没有需要合并的条目")
             }
-        }.onFailure { AppLog.w(TAG, "SSO 同步失败：${it.javaClass.simpleName}") }
+        }.onFailure {
+            if (it is CancellationException) throw it
+            AppLog.w(TAG, "SSO 同步失败：${it.javaClass.simpleName}")
+        }
     }
 
     /**
@@ -1475,13 +1606,15 @@ class BiliApi(context: Context) {
         what: String,
         path: String,
         params: Map<String, String>,
+        strict: Boolean = false,
         parse: (String) -> List<T>,
     ): List<T> = try {
         val raw = get(path, params)
-        val list = parse(raw)
+        val list = withContext(Dispatchers.Default) { parse(if (strict) requireFeedSuccess(raw) else raw) }
         if (list.isEmpty()) AppLog.w(TAG, "$what 解析出 0 条 | 响应前 300 字: ${raw.take(300)}")
         list
     } catch (t: Throwable) {
+        if (t is CancellationException || strict) throw t
         AppLog.e(TAG, "$what 失败", t)
         emptyList()
     }
@@ -1536,7 +1669,7 @@ class BiliApi(context: Context) {
         const val PATH_PGC_PLAYURL = "/pgc/player/web/playurl"
         const val PATH_SEARCH = "/x/web-interface/wbi/search/type"
         const val PATH_HOT_SEARCH = "/x/web-interface/search/square"
-        /** 关注列表。**未登录返回 -101**，见 [followingList] */
+        /** 关注列表。**未登录返回 -101**，见 [followingPage] */
         const val PATH_FOLLOWINGS = "/x/relation/followings"
 
         /**

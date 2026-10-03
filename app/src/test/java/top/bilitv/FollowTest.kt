@@ -5,10 +5,12 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import top.bilitv.data.api.parseFollowingCount
-import top.bilitv.data.api.parseFollowingTotal
-import top.bilitv.data.api.parseFollowings
+import top.bilitv.data.api.parseFollowingPage
 import top.bilitv.data.api.parseUpVideoCount
 import top.bilitv.data.api.parseUpVideos
+import top.bilitv.data.api.parseUpVideoPage
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertThrows
 
 /**
  * 关注页的解析测试（2026-09-29）。
@@ -31,6 +33,28 @@ import top.bilitv.data.api.parseUpVideos
  * 返回 **null 和 0 的含义完全不同**，混了就会给用户说错话。
  */
 class FollowTest {
+
+    @Test
+    fun 投稿边界按原始页槽位判断且坏响应不能假装为空() {
+        val filtered = """{"code":0,"data":{"list":{"vlist":[{"bvid":"av1"}]},"page":{"count":40}}}"""
+        val first = parseUpVideoPage(filtered, 1, 20)
+        assertTrue(first.items.isEmpty())
+        assertTrue(first.hasMore)
+        assertEquals(40L, first.total)
+        assertFalse(parseUpVideoPage(filtered, 2, 20).hasMore)
+        assertFalse(parseUpVideoPage(videosJson.replace("328", "20"), 1, 20).hasMore)
+        assertTrue(parseUpVideoPage(filtered.replace(",\"page\":{\"count\":40}", ""), 1, 20).hasMore)
+        assertFalse(parseUpVideoPage("""{"code":0,"data":{"list":{"vlist":null},"page":{"count":0}}}""", 1, 20).hasMore)
+        assertTrue(parseUpVideoPage(filtered.replace("40", "2147483647"), 1, 20).hasMore)
+        assertFalse(parseUpVideoPage(filtered, Int.MAX_VALUE, Int.MAX_VALUE).hasMore)
+        listOf("""{"code":-352,"message":"风控"}""", """{"code":0,"data":{}}""",
+            """{"code":0,"data":{"list":{"vlist":{}}}}""",
+            filtered.replace("40", "-1"), filtered.replace("40", "1.5"),
+            filtered.replace("40", "\"bad\"")).forEach {
+            assertThrows(Exception::class.java) { parseUpVideoPage(it, 1, 20) }
+        }
+        assertThrows(IllegalArgumentException::class.java) { parseUpVideoPage(filtered, 0, 20) }
+    }
 
     // ------------------------------------------------------------ 关注列表
 
@@ -61,13 +85,13 @@ class FollowTest {
             ],"total":2}}
         """.trimIndent()
 
-        val list = parseFollowings(json)
+        val list = parseFollowingPage(json, 1, 30).items
         assertEquals(2, list.size)
         assertEquals(1L, list[0].mid)
         assertEquals("甲", list[0].name)
         assertEquals("签名1", list[0].sign)
         assertEquals("bilibili 官方账号", list[0].officialDesc)
-        assertEquals(2L, parseFollowingTotal(json))
+        assertEquals(2L, parseFollowingPage(json, 1, 30).total)
     }
 
     @Test
@@ -81,7 +105,7 @@ class FollowTest {
             ],"total":2}}
         """.trimIndent()
 
-        val list = parseFollowings(json)
+        val list = parseFollowingPage(json, 1, 30).items
         assertEquals(88888L, list[0].liveRoomId)
         // ★ 只有对象、live_status 为 0 → 必须当成"没在播"。
         //   见到 live 对象就画角标是个很容易犯的错，会把没播的人标成在播
@@ -89,19 +113,47 @@ class FollowTest {
     }
 
     @Test
-    fun 关注列表_未登录返回101时解析成空列表而不是崩溃() {
-        // ★ 这是未登录时的真实响应。解析器必须"给空列表"而不是抛异常 ——
-        //   界面靠「列表空 + isLoggedIn()」两个信号一起判断该说什么话。
+    fun 关注列表_过期或坏响应不能伪装成零关注() {
         val json = """{"code":-101,"message":"账号未登录","ttl":1,"data":null}"""
-        assertTrue(parseFollowings(json).isEmpty())
-        assertEquals(0L, parseFollowingTotal(json))
+        listOf(json, """{"code":-352,"message":"风控"}""", """{"data":{"list":[],"total":0}}""",
+            """{"code":0,"data":{}}""", """{"code":0,"data":{"list":{},"total":0}}""",
+            """{"code":0,"data":{"list":null,"total":2}}""",
+            """{"code":0,"data":{"list":[],"total":-1}}""",
+            """{"code":0,"data":{"list":[],"total":1.5}}""").forEach {
+            assertThrows(Exception::class.java) { parseFollowingPage(it, 1, 30) }
+        }
+        val zero = parseFollowingPage("""{"code":0,"data":{"list":null,"total":0}}""", 1, 30)
+        assertEquals(0L, zero.total)
+        assertFalse(zero.hasMore)
+        assertTrue(zero.items.isEmpty())
+        assertThrows(IllegalArgumentException::class.java) { parseFollowingPage(json, 0, 30) }
     }
 
     @Test
     fun 关注列表_mid非法的条目被丢掉() {
         // 幽灵条目（mid=0）会让 key 撞车 → 网格里出现重复 key 会直接崩
         val json = """{"code":0,"data":{"list":[${upJson(0, "幽灵")}],"total":1}}"""
-        assertTrue(parseFollowings(json).isEmpty())
+        assertTrue(parseFollowingPage(json, 1, 30).items.isEmpty())
+    }
+
+    @Test
+    fun 关注分页按总数或原始槽位且过滤和去重不提前结束() {
+        val json = """{"code":0,"data":{"list":[${upJson(0, "坏")},${upJson(9, "甲")},${upJson(9, "重复")}],"total":7}}"""
+        val first = parseFollowingPage(json, 1, 3)
+        assertEquals(listOf(9L), first.items.map { it.mid })
+        assertEquals(7L, first.total)
+        assertTrue(first.hasMore)
+        assertTrue(parseFollowingPage(json, 2, 3).hasMore)
+        assertFalse(parseFollowingPage(json, 3, 3).hasMore)
+        assertTrue(parseFollowingPage(json.replace("7", "2147483648"), 1, 3).hasMore)
+        assertFalse(parseFollowingPage(json, Int.MAX_VALUE, Int.MAX_VALUE).hasMore)
+        val unknown = json.replace(",\"total\":7", "")
+        assertNull(parseFollowingPage(unknown, 1, 3).total)
+        assertTrue(parseFollowingPage(unknown, 1, 3).hasMore)
+        assertFalse(parseFollowingPage(unknown, 1, 4).hasMore)
+        val filtered = json.replace("9", "0")
+        assertTrue(parseFollowingPage(filtered, 1, 3).items.isEmpty())
+        assertTrue(parseFollowingPage(filtered, 1, 3).hasMore)
     }
 
     // ------------------------------------------------------------ 关注计数

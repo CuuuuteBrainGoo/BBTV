@@ -46,6 +46,9 @@ import androidx.compose.ui.unit.dp
  */
 object RailIcons {
 
+    /** Initialize the shared canvas before any icon can be constructed. */
+    val ICON_SIZE = 24.dp
+
     /**
      * 把一个或多个 SVG `d` 串组装成线性图标。
      *
@@ -71,6 +74,7 @@ object RailIcons {
                 )
             }
         }.build()
+
 
     // ---------------------------------------------------------------- 侧栏 8 项
 
@@ -253,18 +257,23 @@ object RailIcons {
 
     val Play: ImageVector by lazy { icon("player_play", "M7 4 L20 12 L7 20 Z") }
     val Pause: ImageVector by lazy { icon("player_pause", "M7 4 V20", "M17 4 V20") }
+    val Comments: ImageVector by lazy { icon("player_comments", "M4 3 H20 V17 H10 L4 21 Z", "M8 8 H16 M8 12 H14") }
     val Subtitle: ImageVector by lazy { icon("player_subtitle",
         "M5 4 H19 A2 2 0 0 1 21 6 V18 A2 2 0 0 1 19 20 H5 A2 2 0 0 1 3 18 V6 A2 2 0 0 1 5 4 Z",
         "M10 9 A3 3 0 1 0 10 15 M18 9 A3 3 0 1 0 18 15") }
     val Up: ImageVector by lazy { icon("player_up", "M12 3 A4 4 0 1 0 12 11 A4 4 0 1 0 12 3 Z", "M3 21 V19 A9 7 0 0 1 21 19 V21") }
     val Line: ImageVector by lazy { icon("player_line", "M3 6 H21 M3 12 H21 M3 18 H21", "M7 3 V9 M17 9 V15 M10 15 V21") }
     val Retry: ImageVector by lazy { icon("player_retry", "M19 8 A8 8 0 1 0 20 15", "M19 3 V8 H14") }
+    val Catalogue: ImageVector by lazy { icon("player_catalogue", "M8 5 H21 M8 12 H21 M8 19 H21", "M3 5 H4 M3 12 H4 M3 19 H4") }
+    val Recommend: ImageVector by lazy { icon("player_recommend", "M3 3 H11 V11 H3 Z M15 3 H21 V11 H15 Z M3 15 H11 V21 H3 Z", "M15 18 H21 M18 15 V21") }
+    val Previous: ImageVector by lazy { icon("player_previous", "M5 4 V20 M19 4 L8 12 L19 20 Z") }
+    val Next: ImageVector by lazy { icon("player_next", "M19 4 V20 M5 4 L16 12 L5 20 Z") }
+    val Loop: ImageVector by lazy { icon("player_loop", "M4 10 V8 A3 3 0 0 1 7 5 H20 M16 2 L20 5 L16 8", "M20 14 V16 A3 3 0 0 1 17 19 H4 M8 16 L4 19 L8 22") }
+    val Lock: ImageVector by lazy { icon("player_lock", "M7 10 V7 A5 5 0 0 1 17 7 V10",
+        "M5 10 H19 V21 H5 Z", "M12 14 V17") }
     val Like: ImageVector by lazy { icon("player_like", "M7 10 L11 3 C14 3 14 5 13 9 H19 C21 9 21 11 20 13 L18 20 H7 Z", "M3 10 H7 V20 H3 Z") }
     val Coin: ImageVector by lazy { icon("player_b_coin", "M12 2 A10 10 0 1 0 12 22 A10 10 0 1 0 12 2 Z",
         "M9 6 V18 H12.5 C17.5 18 17.5 12 12.5 12 H9 M9 6 H12 C16.5 6 16.5 12 12 12") }
-
-    /** 图标画布尺寸。和量规的 24 网格一致；实际显示尺寸由调用侧给。 */
-    val ICON_SIZE = 24.dp
 
     /** 描边宽度（相对 24 网格）。量规定的 2。 */
     private const val STROKE = 2f

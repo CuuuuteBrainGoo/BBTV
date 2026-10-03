@@ -2,6 +2,7 @@ package top.bilitv.player
 
 import top.bilitv.data.model.DashStream
 import top.bilitv.data.model.PlayInfo
+import top.bilitv.data.settings.AudioQuality
 
 /**
  * 选流 —— **纯逻辑，无 Android 依赖，可单测**。
@@ -15,7 +16,7 @@ import top.bilitv.data.model.PlayInfo
  *  3. 逐个丢给解码能力检测，**第一个能被解出来的就用它**；
  *  4. 某个清晰度全军覆没 → 自动降到下一档，而不是直接报错。
  *
- * 音频单独选：按码率从高到低，取第一个能解的。音频解不了就返回空，画面照常播（静音）
+ * 音频单独选：优先所选可解码档位，缺失就近回退；自动优先常规AAC。全解不了返回空，画面照常播（静音）
  * —— 宁可有画面没声音，也别整个黑屏。
  *
  * ## ★ 「只要 AVC」这条逃生路
@@ -62,9 +63,10 @@ object StreamSelector {
         qualityId: Int? = null,
         preferHevc: Boolean = true,
         onlyAvc: Boolean = false,
+        audioQualityId: Int = 0,
     ): Selection? {
         val video = pickVideo(play.videos, canVideo, qualityId, preferHevc, onlyAvc) ?: return null
-        return Selection(video, pickAudio(play.audios, canAudio))
+        return Selection(video, pickAudio(play.audios, canAudio, audioQualityId))
     }
 
     fun pickVideo(
@@ -90,8 +92,20 @@ object StreamSelector {
         return null
     }
 
-    fun pickAudio(audios: List<DashStream>, canAudio: (DashStream) -> Boolean): DashStream? =
-        audios.sortedByDescending { it.bandwidth }.firstOrNull(canAudio)
+    fun pickAudio(audios: List<DashStream>, canAudio: (DashStream) -> Boolean, audioQualityId: Int = 0): DashStream? {
+        val compatible = audios.filter(canAudio).sortedByDescending { it.bandwidth }
+        val desired = AudioQuality.of(audioQualityId).id
+        if (desired != 0) compatible.firstOrNull { it.qualityId == desired }?.let { return it }
+        val normal = compatible.filter { it.qualityId in AudioQuality.NORMAL_IDS }
+        val rank = AudioQuality.NORMAL_IDS.indexOf(desired)
+        if (rank >= 0) {
+            normal.filter { AudioQuality.NORMAL_IDS.indexOf(it.qualityId) <= rank }
+                .maxByOrNull { AudioQuality.NORMAL_IDS.indexOf(it.qualityId) }?.let { return it }
+            normal.minByOrNull { AudioQuality.NORMAL_IDS.indexOf(it.qualityId) }?.let { return it }
+        }
+        // Special tracks are opt-in when ordinary AAC is available; no account rights are invented.
+        return normal.firstOrNull() ?: compatible.firstOrNull()
+    }
 
     /** 越小越优先 */
     private fun codecRank(s: DashStream, preferHevc: Boolean): Int = when {

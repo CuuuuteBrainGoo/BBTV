@@ -77,6 +77,7 @@ sealed interface Screen {
         val seasonId: Long = 0L,
         val playlistId: Long = 0L,
         val playlistTitle: String = "",
+        val directResume: Boolean = false,
     ) : Screen
 
     /** 影视 / 番剧的剧集详情（PGC） */
@@ -174,6 +175,14 @@ sealed interface Screen {
          */
         fun targetForVideoCard(detailPageEnabled: Boolean, bvid: String): Screen =
             if (detailPageEnabled) Detail(bvid) else Player(bvid = bvid, cid = 0L)
+
+        fun targetAfterPlayback(returnDetails: Boolean, bvid: String, seasonId: Long,
+            playlistId: Long = 0L, playlistTitle: String = ""): Screen? = when {
+            !returnDetails -> null
+            seasonId > 0L -> PgcDetail(seasonId)
+            bvid.isNotBlank() -> Detail(bvid, playlistId, playlistTitle)
+            else -> null
+        }
     }
 }
 
@@ -345,7 +354,7 @@ fun BiliTvRoot(
                  * 播放页自己会从本机记录里读上次的位置（`resumeIfNeeded`）。
                  */
                 onResume = { e ->
-                    stack.add(Screen.Player(e.bvid, e.cid, e.epId, e.title, e.cover))
+                    stack.add(Screen.Player(e.bvid, e.cid, e.epId, e.title, e.cover, seasonId = e.seasonId, directResume = true))
                 },
             )
         }
@@ -415,8 +424,18 @@ fun BiliTvRoot(
             seasonId = top.seasonId,
             playlistId = top.playlistId,
             playlistTitle = top.playlistTitle,
+            directResume = top.directResume,
             onOpenUp = { mid, name, face -> stack.add(Screen.UpSpace(mid, name, face)) },
-            onBack = { pop() },
+            onBack = { currentBvid, currentSeason ->
+                val target = Screen.targetAfterPlayback(app?.settings?.returnDetailsOnExit == true,
+                    currentBvid, currentSeason, top.playlistId, top.playlistTitle)
+                pop()
+                if (target != null && stack.lastOrNull() != target) {
+                    // 替换旧详情，防止连播到新视频后返回链不断堆积介绍页。
+                    if (stack.lastOrNull() is Screen.Detail || stack.lastOrNull() is Screen.PgcDetail) pop()
+                    stack.add(target)
+                }
+            },
         )
 
         is Screen.LivePlayer -> PlayerScreen(
@@ -429,7 +448,7 @@ fun BiliTvRoot(
             coverHint = top.cover,
             ownerHint = top.uname,
             onOpenUp = { mid, name, face -> stack.add(Screen.UpSpace(mid, name, face)) },
-            onBack = { pop() },
+            onBack = { _, _ -> pop() },
         )
     }
 

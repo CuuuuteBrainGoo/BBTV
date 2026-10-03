@@ -18,6 +18,9 @@ data class VideoDetail(
     val badge: String = "",
     val collectionTitle: String = "",
     val collection: List<VideoCollectionEpisode> = emptyList(),
+    val chargingExclusive: Boolean = false,
+    val chargingPreviewAvailable: Boolean? = null,
+    val paidContent: Boolean = false,
 )
 
 /** 合集里的投稿；分P仍来自当前投稿的pages，二者不混排。 */
@@ -80,12 +83,22 @@ data class FeedItem(
     val seasonId: Long = 0L,
 )
 
+data class SearchVideoPage(val items: List<FeedItem>, val hasMore: Boolean)
+
 /** DASH 播放信息（B 站返回的是音画分离的两组流，不是标准 MPD） */
 data class PlayInfo(
     val durationMs: Long,
     val videos: List<DashStream>,
     val audios: List<DashStream>,
     val qualityLabels: Map<Int, String> = emptyMap(),
+    val source: top.bilitv.data.settings.VideoApiSource = top.bilitv.data.settings.VideoApiSource.WEB,
+    val notice: String? = null,
+    /** True only when the response explicitly identifies this as a preview. */
+    val isPreview: Boolean = false,
+    /** Server-authorized preview span in milliseconds, never inferred from full media duration. */
+    val previewLimitMs: Long? = null,
+    /** Official PGC opening/ending markers, independent of community SponsorBlock categories. */
+    val officialClips: List<OfficialClip> = emptyList(),
 ) {
     /**
      * 选一条视频流：同清晰度下**优先 HEVC/AV1，避开 AVC**。
@@ -102,6 +115,18 @@ data class PlayInfo(
         return atMax.firstOrNull { it.isHevc }
             ?: atMax.firstOrNull { !it.isAvc }
             ?: atMax.first()
+    }
+}
+
+data class OfficialClip(val startMs: Long, val endMs: Long, val intro: Boolean) {
+    companion object {
+        fun fromSeconds(start: Double, end: Double, intro: Boolean, durationMs: Long): OfficialClip? {
+            if (!start.isFinite() || !end.isFinite() || start < 0 || end <= start ||
+                durationMs <= 0 || end > durationMs / 1000.0) return null
+            val startMs = (start * 1000).toLong()
+            val endMs = (end * 1000).toLong()
+            return if (endMs > startMs) OfficialClip(startMs, endMs, intro) else null
+        }
     }
 }
 

@@ -1,11 +1,13 @@
 package top.bilitv.ui.settings
 
+import top.bilitv.ui.components.scrollWithScrollbar
 import android.content.Context
+import top.bilitv.R
 import androidx.compose.foundation.background
+import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Text
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -16,6 +18,9 @@ import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.layout.boundsInRoot
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.unit.dp
@@ -34,6 +39,11 @@ import top.bilitv.ui.components.LocalNavigationFocus
 import top.bilitv.ui.theme.AppTheme
 import top.bilitv.ui.theme.AppType
 import top.bilitv.util.AppLog
+
+internal class SettingsScroll(val state: ScrollState) {
+    var viewport by mutableStateOf(Rect.Zero)
+}
+internal val LocalSettingsScroll = compositionLocalOf<SettingsScroll?> { null }
 
 /** BT 的三栏结构：全局侧栏 / 设置分类 / 当前分类的项目。 */
 @Composable
@@ -59,7 +69,6 @@ fun SettingsScreen(
     var quality by remember { mutableStateOf(settings.preferredQuality) }
     var seekSeconds by remember { mutableStateOf(settings.seekSeconds) }
     var autoLowerQuality by remember { mutableStateOf(settings.autoLowerQuality) }
-    var autoNext by remember { mutableStateOf(settings.autoNext) }
     var detailPage by remember { mutableStateOf(settings.detailPageEnabled) }
     var singleBackExit by remember { mutableStateOf(settings.singleBackExit) }
     var advanced by remember { mutableStateOf(settings.advancedMode) }
@@ -81,9 +90,10 @@ fun SettingsScreen(
             val code = if (android.os.Build.VERSION.SDK_INT >= 28) info.longVersionCode
             else @Suppress("DEPRECATION") info.versionCode.toLong()
             "$name ($code)"
-        }.getOrElse { "未知版本" }
+        }.getOrElse { context.getString(R.string.version_unknown) }
     }
 
+    var resetRevision by remember { mutableStateOf(0) }
     var notice by remember { mutableStateOf<String?>(null) }
 
     val categories = SettingsCatalog.visibleCategories(advanced)
@@ -95,23 +105,26 @@ fun SettingsScreen(
     val appearanceItems = SettingsCatalog.itemsIn(SettingsCategory.APPEARANCE, true)
     val starts = remember { appearanceItems.associateWith { FocusRequester() } }
     val ends = remember {
-        appearanceItems.associateWith { if (it == SettingsItem.SKIN) starts.getValue(it) else FocusRequester() }
+        appearanceItems.associateWith { if (it in setOf(SettingsItem.SKIN, SettingsItem.BACKGROUND_COLOR, SettingsItem.APPEARANCE_RESET)) starts.getValue(it) else FocusRequester() }
     }
     var focusOnEntry by remember { mutableStateOf(true) }
 
-    Box(Modifier.fillMaxSize()) {
+    BoxWithConstraints(Modifier.fillMaxSize()) {
+        val categoryWidth = (maxWidth * .25f).coerceIn(112.dp.coerceAtMost(maxWidth), 194.dp.coerceAtMost(maxWidth))
+        val contentPadding = if (maxWidth < 600.dp) 8.dp else 24.dp
         CompositionLocalProvider(LocalCategoryAnchor provides categoryAnchor) {
             Row(Modifier.fillMaxSize()) {
                 Column(
-                    Modifier.width(194.dp).fillMaxHeight()
-                        .verticalScroll(rememberScrollState()).padding(10.dp),
+                    Modifier.width(categoryWidth).fillMaxHeight()
+                        .scrollWithScrollbar(rememberScrollState()).padding(10.dp),
                     verticalArrangement = Arrangement.spacedBy(2.dp),
                 ) {
                     categories.forEachIndexed { index, category ->
+                        val label = androidx.compose.ui.res.stringResource(category.labelRes)
                         val self = requesters.getValue(category)
                         var focused by remember { mutableStateOf(false) }
                         Box(
-                            Modifier.fillMaxWidth().height(50.dp)
+                            Modifier.fillMaxWidth().heightIn(min = 50.dp)
                                 .focusRequester(self)
                                 .then(if (category == cat) Modifier.focusRequester(entryFocus) else Modifier)
                                 .onFocusChanged {
@@ -128,15 +141,15 @@ fun SettingsScreen(
                                     right = if (category != cat || category == SettingsCategory.ABOUT) self else firstItem
                                 }
                                 .focusRing(
-                                    contentDescription = category.label,
+                                    contentDescription = label,
                                     restFill = if (category == cat) theme.navSelectedFill else Color.Transparent,
                                     focusedFill = theme.surfaceHigh,
                                     scaleOnFocus = 1f,
                                     onClick = { selectedName = category.name },
-                                ).padding(horizontal = 12.dp),
+                                ).padding(horizontal = 12.dp, vertical = 12.dp),
                             contentAlignment = Alignment.CenterStart,
                         ) {
-                            Text(category.label, style = TextStyle(fontSize = AppType.Body1),
+                            Text(label, style = TextStyle(fontSize = AppType.Body1),
                                 color = if (focused) theme.textPrimary else
                                     if (category == cat) theme.navSelectedText else theme.textSecondary)
                         }
@@ -144,11 +157,16 @@ fun SettingsScreen(
                 }
                 Box(Modifier.fillMaxHeight().width(1.dp).background(theme.divider))
                 // 每类只有少量设置；全部组合，避免焦点指向 LazyColumn 尚未创建的项。
-                key(cat) {
+                key(cat, resetRevision) {
+                    val scrollState = rememberScrollState()
+                    val scroll = remember(scrollState) { SettingsScroll(scrollState) }
+                    CompositionLocalProvider(LocalSettingsScroll provides scroll) {
                     Column(
-                        Modifier.weight(1f).fillMaxHeight().verticalScroll(rememberScrollState())
+                        Modifier.weight(1f).fillMaxHeight()
+                            .onGloballyPositioned { scroll.viewport = it.boundsInRoot() }
+                            .scrollWithScrollbar(scrollState)
                             .focusRequester(firstItem)
-                            .padding(start = 24.dp, end = 20.dp, top = 14.dp, bottom = 64.dp),
+                            .padding(horizontal = contentPadding, vertical = 14.dp),
                         verticalArrangement = Arrangement.spacedBy(6.dp),
                     ) {
                         if (cat == SettingsCategory.DANMAKU) DanmakuSettingsPage(settings, Modifier.backToCategories())
@@ -173,8 +191,6 @@ fun SettingsScreen(
                                 onSeekSeconds = { seekSeconds = it; settings.seekSeconds = it },
                                 autoLowerQuality = autoLowerQuality,
                                 onAutoLowerQuality = { autoLowerQuality = it; settings.autoLowerQuality = it },
-                                autoNext = autoNext,
-                                onAutoNext = { autoNext = it; settings.autoNext = it },
                                 detailPage = detailPage,
                                 onDetailPage = { detailPage = it; settings.detailPageEnabled = it },
                                 singleBackExit = singleBackExit,
@@ -210,9 +226,21 @@ fun SettingsScreen(
                                     cacheBytes = imageCacheBytes(context)
                                     notice = r
                                 },
-                                onClearLog = {
-                                    AppLog.clear()
-                                    notice = "已清空运行日志"
+                                onResetPlayback = {
+                                    settings.resetPlaybackPage()
+                                    quality = settings.preferredQuality; seekSeconds = settings.seekSeconds
+                                    autoLowerQuality = settings.autoLowerQuality; preferHevc = settings.preferHevc
+                                    detailPage = settings.detailPageEnabled; singleBackExit = settings.singleBackExit
+                                    speedIndex = settings.playbackSpeedIndex; aspectId = settings.aspectMode
+                                    resetRevision++; notice = context.getString(R.string.settings_playback_reset_done)
+                                },
+                                onResetAppearance = {
+                                    settings.resetAppearancePage()
+                                    skin = settings.themeSkin; onSkinChange(skin)
+                                    homeSections = settings.homeSections
+                                    railIds = settings.navTabs; onRailTabsChange(railIds)
+                                    barButtons = settings.playerButtons
+                                    resetRevision++; notice = context.getString(R.string.settings_appearance_reset_done)
                                 },
                                 appVersion = appVersion,
                                 firstFocus = starts[item], lastFocus = ends[item],
@@ -220,6 +248,7 @@ fun SettingsScreen(
                                 tailDown = if (index >= 0) appearanceItems.getOrNull(index + 1)?.let { starts[it] } else null,
                             )
                         }
+                    }
                     }
                 }
             }
@@ -233,7 +262,7 @@ fun SettingsScreen(
     LaunchedEffect(notice) {
         if (notice != null) { delay(4_000); notice = null }
     }
-    RequestFocusOnAppear(categoryAnchor, focusOnEntry)
+    RequestFocusOnAppear(categoryAnchor, if (resetRevision > 0) resetRevision else focusOnEntry)
 }
 
 @OptIn(ExperimentalCoilApi::class)
@@ -247,8 +276,8 @@ private fun clearImageCache(context: Context): String = runCatching {
     val loader = Coil.imageLoader(context)
     loader.memoryCache?.clear()
     loader.diskCache?.clear()
-    "已清空图片缓存，封面下次会重新下载"
+    context.getString(R.string.settings_cache_cleared)
 }.getOrElse {
     AppLog.e("Settings", "清理图片缓存失败", it)
-    "清理失败：${it.javaClass.simpleName}"
+    context.getString(R.string.settings_cache_clear_failed)
 }

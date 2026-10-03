@@ -6,15 +6,18 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
+import androidx.compose.ui.input.key.*
+import top.bilitv.BiliTvApp
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -27,7 +30,9 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.LineHeightStyle
@@ -101,8 +106,6 @@ private val TITLE_LINE_HEIGHT = 22.sp
  */
 // 随字号同步收：2 × 22sp + 4dp 余量。⛔ 这个数**必须跟着 TITLE_LINE_HEIGHT 一起改**，
 // 理由见下面那段"52 不是 48"的踩坑记录（少 4dp 就会退化成 1 行 + 省略号）。
-private val TITLE_BOX_HEIGHT = 48.dp
-
 /** 卡片元信息（UP 主 / 日期）字号（BT 实测 28px @2x = 14sp）。 */
 private val MetaSize = 14.sp
 
@@ -154,6 +157,15 @@ fun FeedCard(
 ) {
     val theme = AppTheme.current
     val context = LocalContext.current
+    val settings = (context.applicationContext as? BiliTvApp)?.settings
+    val ownFocus = remember { FocusRequester() }
+    val cardFocus = focusRequester ?: ownFocus
+    val openMenu = rememberVideoCardMenu(item.title, onClick, cardFocus)
+    val titleBoxHeight = with(LocalDensity.current) { TITLE_LINE_HEIGHT.toDp() * 2 + 4.dp }
+    val textHeight = with(LocalDensity.current) { titleBoxHeight + MetaSize.toDp() * 1.4f + 6.dp }
+    // Short windows must leave room for the header and both text lines, even for one wide card.
+    val coverHeightLimit = (LocalConfiguration.current.screenHeightDp.dp - 128.dp - maxOf(theme.cardTextHeight, textHeight))
+        .coerceAtLeast(72.dp)
 
     val desc = buildString {
         append(item.title)
@@ -168,22 +180,24 @@ fun FeedCard(
             // ★ 必须在 focusRing **之前**：requester 挂到"它后面最近的焦点目标"（focusRing 里的
             //   clickable）。放后面就永远挂不上，requestFocus() 会一直抛异常。
             //   2026-09-29 此参数曾被漏接进链里 —— 编译器不吭声，"自动给第一张卡焦点"整条静默失效。
-            .then(
-                if (focusRequester != null) Modifier.focusRequester(focusRequester) else Modifier
-            )
+            .focusRequester(cardFocus)
+            .onPreviewKeyEvent { e ->
+                if (manageMode || e.key != Key.Menu || settings?.cardMenuOnMenuKey == false) false
+                else { if (e.type == KeyEventType.KeyUp && !e.nativeKeyEvent.isCanceled) openMenu(); true }
+            }
             // 焦点链已收编进 focusRing（`docs/audit/A9` §7.3）。
             // onFocused 用来记"上次焦点在哪"，返回时好落回原处。
             //
             // elevateOnFocus：焦点描边+垫色会压到相邻卡片，必须抬到最上层。
             // 不放大（密排网格放大 = 卡片互相撞），所以 scaleOnFocus 保持默认 1f。
             .observeFocus { onFocused?.invoke(it) }
-            .focusRing(contentDescription = desc, elevateOnFocus = true, onClick = onClick)
+            .focusRing(contentDescription = desc, elevateOnFocus = true, onClick = onClick, onLongClick = openMenu.takeUnless { manageMode })
             .padding(FOCUS_RING_INSET),
     ) {
         Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .aspectRatio(16f / 9f)
+                .cappedCover(16f / 9f, coverHeightLimit)
                 .clip(RoundedCornerShape(theme.cardCorner - FOCUS_RING_INSET)),
         ) {
             AsyncImage(
@@ -194,7 +208,7 @@ fun FeedCard(
                     .crossfade(true)
                     .build(),
                 contentDescription = null,
-                contentScale = ContentScale.Crop,
+                contentScale = ContentScale.Fit,
                 modifier = Modifier.matchParentSize(),
             )
 
@@ -216,15 +230,6 @@ fun FeedCard(
 
             if (!badge.isNullOrBlank()) {
                 ContentBadge(badge, Modifier.align(Alignment.TopEnd).padding(6.dp))
-            }
-
-            // 右下角：时长
-            if (item.durationSec > 0) {
-                Pill(
-                    modifier = Modifier.align(Alignment.BottomEnd).padding(6.dp),
-                    background = Color(0xA60A0A10),
-                    text = formatDuration(item.durationSec),
-                )
             }
 
             /*
@@ -253,20 +258,20 @@ fun FeedCard(
 
             // 左下角：播放量 + 弹幕数
             Row(
-                modifier = Modifier.align(Alignment.BottomStart).padding(6.dp),
+                modifier = Modifier.align(Alignment.BottomStart).fillMaxWidth().padding(6.dp),
                 horizontalArrangement = Arrangement.spacedBy(4.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                if (item.viewCount > 0) {
-                    Pill(background = Color(0xA60A0A10), text = formatCount(item.viewCount)) {
-                        PlayGlyph()
+                Row(Modifier.weight(1f), horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    verticalAlignment = Alignment.CenterVertically) {
+                    if (item.viewCount > 0) {
+                        Pill(modifier = Modifier.weight(1f, fill = false), text = formatCount(item.viewCount)) { PlayGlyph() }
+                    }
+                    if (item.danmakuCount > 0) {
+                        Pill(modifier = Modifier.weight(1f, fill = false), text = formatCount(item.danmakuCount)) { DanmakuGlyph() }
                     }
                 }
-                if (item.danmakuCount > 0) {
-                    Pill(background = Color(0xA60A0A10), text = formatCount(item.danmakuCount)) {
-                        DanmakuGlyph()
-                    }
-                }
+                if (item.durationSec > 0) Pill(text = formatDuration(item.durationSec))
             }
 
             /*
@@ -297,7 +302,7 @@ fun FeedCard(
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(theme.cardTextHeight)
+                .heightIn(min = maxOf(theme.cardTextHeight, textHeight))
                 .padding(top = 6.dp),
         ) {
             /*
@@ -336,7 +341,7 @@ fun FeedCard(
                 color = theme.textPrimary,
                 maxLines = 2,
                 overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.height(TITLE_BOX_HEIGHT),
+                modifier = Modifier.height(titleBoxHeight),
             )
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
@@ -345,7 +350,7 @@ fun FeedCard(
                     color = theme.textSecondary,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.weight(1f, fill = false),
+                    modifier = Modifier.weight(1f),
                 )
                 val date = formatPubDate(item.pubDateSec)
                 if (date.isNotBlank()) {
@@ -354,7 +359,8 @@ fun FeedCard(
                         style = TextStyle(fontSize = MetaSize),
                         color = theme.textTertiary,
                         maxLines = 1,
-                        modifier = Modifier.padding(start = 6.dp),
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(.65f, fill = false).padding(start = 6.dp),
                     )
                 }
             }
@@ -413,6 +419,8 @@ private fun Pill(
             style = TextStyle(fontSize = AppType.Caption, fontWeight = FontWeight.Medium),
             color = Color.White,
             maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f, fill = false),
         )
     }
 }

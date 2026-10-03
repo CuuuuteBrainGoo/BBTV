@@ -1,5 +1,7 @@
 package top.bilitv.ui.detail
 
+import top.bilitv.ui.components.scrollWithScrollbar
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -9,12 +11,12 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -69,7 +71,12 @@ import top.bilitv.ui.theme.AppTheme
 @Composable
 fun DetailScreen(bvid: String, onBack: () -> Unit, onPlay: (Long) -> Unit) {
     val vm: DetailViewModel = viewModel()
+    val playFocus = remember { FocusRequester() }
+    val app = androidx.compose.ui.platform.LocalContext.current.applicationContext as? top.bilitv.BiliTvApp
+    val sections = app?.settings?.detailSections ?: top.bilitv.data.settings.DetailLayout.ALL
+    val showMeta = app?.settings?.detailShowMeta != false
     LaunchedEffect(bvid) { vm.load(bvid) }
+    DisposableEffect(vm) { onDispose { vm.stopLoading() } }
 
     val detail = vm.detail
     val theme = AppTheme.current
@@ -85,7 +92,7 @@ fun DetailScreen(bvid: String, onBack: () -> Unit, onPlay: (Long) -> Unit) {
 
     Box(modifier = Modifier.fillMaxSize()) {
         when {
-            vm.loading -> CircularProgressIndicator(Modifier.align(Alignment.Center))
+            vm.loading && detail == null -> CircularProgressIndicator(Modifier.align(Alignment.Center))
 
             detail == null -> ErrorPanel(
                 message = vm.error ?: "加载失败",
@@ -94,7 +101,14 @@ fun DetailScreen(bvid: String, onBack: () -> Unit, onPlay: (Long) -> Unit) {
                 modifier = Modifier.align(Alignment.Center),
             )
 
-            else -> DetailContent(detail = detail, onPlay = onPlay)
+            else -> {
+                DetailContent(detail = detail, onPlay = onPlay, playFocus = playFocus, sections = sections, showMeta = showMeta)
+                if (vm.loading || vm.error != null) top.bilitv.ui.components.LoadFeedback(
+                    vm.loading, vm.error, vm::retry,
+                    Modifier.align(Alignment.BottomCenter).padding(theme.screenPadding)
+                        .then(Modifier.background(theme.surfaceHigh)),
+                )
+            }
         }
 
         // 常驻返回。压在页头上 —— BackChip 自带不透明底色，在亮画面上也看得清。
@@ -117,9 +131,6 @@ fun DetailScreen(bvid: String, onBack: () -> Unit, onPlay: (Long) -> Unit) {
         RequestFocusOnAppear(retryButton, vm.error)
     }
 }
-
-/** 「播放」按钮的焦点目标。提到文件级是因为 [DetailScreen] 和 [DetailContent] 都要用。 */
-private val playFocus = FocusRequester()
 
 /**
  * 出错态：一句话 + 一个「重试」。
@@ -177,19 +188,20 @@ private fun ErrorPanel(
  * 于是左右内边距由下面每一段各自加（`theme.screenPadding`）。
  */
 @Composable
-private fun DetailContent(detail: VideoDetail, onPlay: (Long) -> Unit) {
+private fun DetailContent(detail: VideoDetail, onPlay: (Long) -> Unit, playFocus: FocusRequester,
+    sections: List<String>, showMeta: Boolean) {
     val theme = AppTheme.current
 
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .verticalScroll(rememberScrollState())
+            .scrollWithScrollbar(rememberScrollState())
             .padding(bottom = theme.sectionGap),
     ) {
         CinemaHero(
             imageUrl = detail.cover,
             title = detail.title,
-            meta = detailMetaLine(detail),
+            meta = if (showMeta) detailMetaLine(detail) else "",
             actionText = "播放",
             // 有分P 就播第一P，和旧版一致（点页头的大按钮 = 从头看）
             onClick = { onPlay(detail.pages.firstOrNull()?.cid ?: detail.cid) },
@@ -206,7 +218,8 @@ private fun DetailContent(detail: VideoDetail, onPlay: (Long) -> Unit) {
             titleMaxLines = 2,
         )
 
-        if (detail.pages.size > 1) {
+        for (section in sections) {
+        if (section == "PARTS" && detail.pages.size > 1) {
             SectionTitle(
                 text = "分P（${detail.pages.size}）",
                 modifier = Modifier.padding(
@@ -256,7 +269,7 @@ private fun DetailContent(detail: VideoDetail, onPlay: (Long) -> Unit) {
             }
         }
 
-        if (detail.desc.isNotBlank()) {
+        if (section == "DESC" && detail.desc.isNotBlank()) {
             SectionTitle(
                 text = "简介",
                 modifier = Modifier.padding(
@@ -270,6 +283,7 @@ private fun DetailContent(detail: VideoDetail, onPlay: (Long) -> Unit) {
                 desc = detail.desc,
                 modifier = Modifier.padding(horizontal = theme.screenPadding),
             )
+        }
         }
     }
 }

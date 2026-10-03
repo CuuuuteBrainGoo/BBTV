@@ -17,6 +17,20 @@ package top.bilitv.data.settings
  */
 object PlaybackTuning {
 
+    fun resetKeys(keys: Set<String>) = keys.filter { it.startsWith("screenshot_") || it.startsWith("touch_") || it.startsWith("up_speed_") || it.startsWith("player_key_") || it in setOf(
+        "preferred_quality", "preferred_audio_quality", "playback_performance", "seek_seconds", "auto_lower_quality", "prefer_hevc", "auto_next", "playback_end_action",
+        "detail_page_on", "return_details_on_exit", "ask_resume", "single_back_exit", "player_up_enabled", "player_down_enabled", "player_up_action", "player_down_action",
+        "playback_speed_index", "aspect_mode", "subtitle_on", "remember_up_speed", "player_show_progress", "player_pause_icon",
+        "player_hide_controls_start", "player_progress_time", "skip_official_intro_outro") }
+
+    enum class EndAction(val label: String) {
+        PAUSE("暂停播放"), NEXT("自动播放下一集 / 下一P"), LOOP("循环当前视频");
+        companion object {
+            fun of(id: String?, oldAutoNext: Boolean) = entries.firstOrNull { it.name == id }
+                ?: if (oldAutoNext) NEXT else PAUSE
+        }
+    }
+
     enum class SideAction(val label: String) {
         CATALOGUE("分P与播放列表"), RECOMMEND("推荐视频"), UP_UPLOADS("UP主投稿");
         companion object {

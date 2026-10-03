@@ -1,5 +1,6 @@
 package top.bilitv.ui.history
 
+import top.bilitv.ui.components.verticalScrollbar
 import android.app.Application
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -11,11 +12,13 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items as gridItems
 import androidx.compose.material3.Text
+import androidx.compose.ui.res.stringResource
+import top.bilitv.R
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -35,6 +38,7 @@ import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
 import androidx.lifecycle.viewmodel.compose.viewModel
 import top.bilitv.BiliTvApp
@@ -43,6 +47,7 @@ import top.bilitv.data.model.FeedItem
 import top.bilitv.ui.components.FeedCard
 import top.bilitv.ui.components.RequestFocusOnAppear
 import top.bilitv.ui.components.TvCard
+import top.bilitv.ui.theme.gridCells
 import top.bilitv.ui.theme.AppTheme
 import top.bilitv.ui.theme.AppType
 
@@ -102,8 +107,11 @@ fun HistoryScreen(
     onGoHome: () -> Unit,
 ) {
     val vm: HistoryViewModel = viewModel()
+    val gridState = androidx.compose.foundation.lazy.grid.rememberLazyGridState()
     val theme = AppTheme.current
     LaunchedEffect(Unit) { vm.load() }
+    DisposableEffect(vm) { onDispose { vm.stopLoading() } }
+    top.bilitv.ui.OnRefreshRequest { vm.load() }
 
     val firstItem = remember { FocusRequester() }
     val clearButton = remember { FocusRequester() }
@@ -146,11 +154,12 @@ fun HistoryScreen(
                 EmptyState(onGoHome = onGoHome, requester = emptyButton)
             } else {
                 LazyVerticalGrid(
-                    columns = GridCells.Fixed(theme.cardColumns),
+                    state = gridState,
+                    columns = theme.gridCells(),
                     contentPadding = PaddingValues(theme.screenPadding),
                     horizontalArrangement = Arrangement.spacedBy(theme.cardGap),
                     verticalArrangement = Arrangement.spacedBy(theme.rowGap),
-                    modifier = Modifier.fillMaxSize(),
+                    modifier = Modifier.fillMaxSize().verticalScrollbar(gridState),
                 ) {
                     gridItems(list, key = { it.key }) { entry ->
                         val isFirst = entry.key == list.first().key
@@ -257,18 +266,14 @@ private fun HistoryHeader(
     ) {
         Column {
             Text(
-                text = "观看记录",
+                text = stringResource(R.string.nav_history),
                 style = TextStyle(fontSize = AppType.H1, fontWeight = FontWeight.SemiBold),
                 color = theme.textPrimary,
             )
             Text(
-                text = buildString {
-                    if (count > 0) append("共 $count 条 · ")
-                    append("只存在这台设备上，不上传")
-                    // 管理模式在文案里说清楚"现在按 OK 会删" —— 这是**破坏性操作**，
-                    // 用户必须能在不试的情况下知道自己在什么模式里
-                    if (manageMode) append(" · 管理模式：按 OK 删除这一条")
-                },
+                text = (if (count > 0) stringResource(R.string.history_count, count) else "") +
+                    stringResource(R.string.history_local_hint) +
+                    if (manageMode) stringResource(R.string.history_manage_hint) else "",
                 style = TextStyle(fontSize = AppType.Caption),
                 color = if (manageMode) theme.primary else theme.textTertiary,
                 modifier = Modifier.padding(top = 4.dp),
@@ -291,10 +296,10 @@ private fun HistoryHeader(
                     if (manageRequester != null) Modifier.focusRequester(manageRequester) else Modifier
                 ),
                 background = if (manageMode) theme.primary else theme.surfaceHigh,
-                contentDescription = if (manageMode) "退出管理模式" else "进入管理模式，可删除单条记录",
+                contentDescription = if (manageMode) stringResource(R.string.history_manage_exit) else stringResource(R.string.history_manage_enter),
             ) {
                 Text(
-                    text = if (manageMode) "完成" else "管理",
+                    text = if (manageMode) stringResource(R.string.action_done) else stringResource(R.string.action_manage),
                     style = TextStyle(fontSize = AppType.Body3, fontWeight = FontWeight.Medium),
                     color = if (manageMode) theme.onPrimary else theme.textPrimary,
                     modifier = Modifier.padding(horizontal = 20.dp, vertical = 11.dp),
@@ -309,10 +314,10 @@ private fun HistoryHeader(
                     if (clearRequester != null) Modifier.focusRequester(clearRequester) else Modifier
                 ),
                 background = theme.surfaceHigh,
-                contentDescription = "清空全部观看记录",
+                contentDescription = stringResource(R.string.history_clear_description),
             ) {
                 Text(
-                    text = "清空记录",
+                    text = stringResource(R.string.history_clear),
                     style = TextStyle(fontSize = AppType.Body3),
                     color = theme.textPrimary,
                     modifier = Modifier.padding(horizontal = 20.dp, vertical = 11.dp),
@@ -328,12 +333,12 @@ private fun EmptyState(onGoHome: () -> Unit, requester: FocusRequester) {
     Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
         Column(horizontalAlignment = Alignment.CenterHorizontally) {
             Text(
-                text = "还没有观看记录",
+                text = stringResource(R.string.history_empty),
                 style = TextStyle(fontSize = AppType.H4, fontWeight = FontWeight.Medium),
                 color = theme.textPrimary,
             )
             Text(
-                text = "随便点开一个视频看上十几秒，这里就会有记录，下次能直接接着看。",
+                text = stringResource(R.string.history_empty_hint),
                 style = TextStyle(fontSize = AppType.Meta),
                 color = theme.textSecondary,
                 modifier = Modifier.padding(top = 10.dp),
@@ -349,10 +354,10 @@ private fun EmptyState(onGoHome: () -> Unit, requester: FocusRequester) {
                     .focusRequester(requester)
                     .padding(top = 24.dp),
                 background = theme.surfaceHigh,
-                contentDescription = "去首页",
+                contentDescription = stringResource(R.string.action_go_home),
             ) {
                 Text(
-                    text = "去首页看看",
+                    text = stringResource(R.string.action_browse_home),
                     style = TextStyle(fontSize = AppType.Body2),
                     color = theme.textPrimary,
                     modifier = Modifier.padding(horizontal = 26.dp, vertical = 13.dp),
@@ -390,13 +395,14 @@ class HistoryViewModel(app: Application) : AndroidViewModel(app) {
 
     fun load() {
         items = graph.history.all()
-        repairJob?.cancel()
+        stopLoading()
         val stale = items.filter { it.isPgc && it.title.startsWith("第 ") && it.title.endsWith(" 集") }
         if (stale.isEmpty()) return
         repairJob = viewModelScope.launch {
             for (entry in stale) {
                 try {
                     val detail = graph.api.pgcDetail(0L, entry.epId)
+                    coroutineContext.ensureActive()
                     val episode = detail?.episodes?.firstOrNull { it.epId == entry.epId }
                     if (episode != null && graph.history.get(entry.key)?.title == entry.title) {
                         graph.history.updateTitle(entry.key, detail.playbackTitle(episode))
@@ -407,6 +413,11 @@ class HistoryViewModel(app: Application) : AndroidViewModel(app) {
                 delay(1200L)
             }
         }
+    }
+
+    fun stopLoading() {
+        repairJob?.cancel()
+        repairJob = null
     }
 
     fun remove(key: String) {

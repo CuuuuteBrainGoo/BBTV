@@ -37,6 +37,7 @@ data class HistoryEntry(
     /** 最后一次观看的时间（Unix 秒）。用来排序和显示"多久之前" */
     val updatedAtSec: Long = 0L,
     val badge: String = "",
+    val seasonId: Long = 0L,
 ) {
     /** 是不是番剧/影视 */
     val isPgc: Boolean get() = epId > 0L
@@ -149,6 +150,7 @@ object History {
             bvid = incoming.bvid.ifBlank { old.bvid },
             cid = if (incoming.cid != 0L) incoming.cid else old.cid,
             epId = if (incoming.epId != 0L) incoming.epId else old.epId,
+            seasonId = incoming.seasonId.takeIf { it > 0L } ?: old.seasonId,
             title = incoming.title.ifBlank { old.title },
             cover = incoming.cover.ifBlank { old.cover },
             owner = incoming.owner.ifBlank { old.owner },
@@ -185,6 +187,7 @@ object History {
                     put("d", e.durationMs)
                     put("at", e.updatedAtSec)
                     if (e.badge.isNotBlank()) put("bg", e.badge)
+                    if (e.seasonId > 0L) put("ss", e.seasonId)
                 }
             )
         }
@@ -221,6 +224,7 @@ object History {
                     durationMs = o.optLong("d"),
                     updatedAtSec = o.optLong("at"),
                     badge = o.optString("bg"),
+                    seasonId = o.optLong("ss").coerceAtLeast(0L),
                 )
             )
         }

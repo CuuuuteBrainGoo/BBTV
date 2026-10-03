@@ -39,6 +39,8 @@ data class UpUser(
     val liveRoomId: Long = 0L,
 )
 
+data class FollowingPage(val items: List<UpUser>, val total: Long?, val hasMore: Boolean)
+
 /**
  * 一页「UP 主投稿」的结果。
  *
@@ -55,6 +57,7 @@ data class UpUser(
 data class UpVideoPage(
     val items: List<FeedItem>,
     val total: Long = 0L,
+    val hasMore: Boolean = items.isNotEmpty(),
 )
 
 data class UpProfile(val mid: Long, val name: String, val face: String, val sign: String,

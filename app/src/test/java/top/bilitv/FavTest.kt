@@ -5,6 +5,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 import top.bilitv.data.api.parseFavFolders
 import top.bilitv.data.api.parseFavResources
+import top.bilitv.data.api.parseFavResourcePage
 
 /**
  * 收藏页两个接口的解析测试（2026-09-30）。
@@ -29,6 +30,23 @@ import top.bilitv.data.api.parseFavResources
  * 以后谁再"顺手复用一下通用解析器"，这几条会立刻红。
  */
 class FavTest {
+
+    @Test fun `pagination survives filtered pages honors terminal and rejects failed responses`() {
+        val filtered = parseFavResourcePage("""{"code":0,"data":{"has_more":true,"medias":[{"id":12,"title":"已失效视频"}]}}""")
+        assertTrue(filtered.items.isEmpty())
+        assertTrue(filtered.hasMore)
+        val last = parseFavResourcePage("""{"code":0,"data":{"has_more":false,"medias":[{"bvid":"BV1example","title":"末页"}]}}""")
+        assertEquals(1, last.items.size)
+        assertEquals(false, last.hasMore)
+        assertEquals(false, parseFavResourcePage("""{"code":0,"data":{"has_more":0,"medias":null}}""").hasMore)
+        assertEquals(true, parseFavResourcePage("""{"code":0,"data":{"has_more":1,"medias":[]}}""").hasMore)
+        assertTrue(parseFavResourcePage("""{"code":0,"data":{"medias":[{"id":12}]}}""").hasMore)
+        for (raw in listOf("""{"code":-101,"data":{"medias":[]}}""",
+            """{"code":0,"data":{}}""", """{"code":0,"data":{"medias":{},"has_more":true}}""",
+            """{"code":0,"data":{"medias":[],"has_more":"unknown"}}""")) {
+            assertTrue("Failure must not become an empty final page", runCatching { parseFavResourcePage(raw) }.isFailure)
+        }
+    }
 
     /** 照 `/x/v3/fav/resource/list` 实测形状抄的样本。 */
     private val mediasJson = """

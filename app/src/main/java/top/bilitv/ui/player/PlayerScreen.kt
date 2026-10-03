@@ -1,10 +1,13 @@
 package top.bilitv.ui.player
 
+import top.bilitv.ui.components.scrollWithScrollbar
+import top.bilitv.data.settings.PlayerKeyBindings
+import top.bilitv.data.settings.RemoteAction
+import top.bilitv.data.settings.RemoteKeyPress
 import android.app.Activity
 import android.app.Application
 import android.content.Context
 import android.content.ContextWrapper
-import android.content.Intent
 import android.net.Uri
 import android.os.SystemClock
 import android.view.WindowManager
@@ -13,7 +16,6 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -59,11 +61,9 @@ import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
-import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
-import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextAlign
@@ -72,7 +72,6 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.zIndex
 import androidx.compose.ui.viewinterop.AndroidView
-import androidx.core.content.FileProvider
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.ViewModelProvider
@@ -85,6 +84,7 @@ import androidx.media3.ui.PlayerView
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
@@ -116,6 +116,7 @@ import top.bilitv.data.sponsor.SkipPlanner
 import top.bilitv.player.BiliPlayer
 import top.bilitv.player.DecoderSupport
 import top.bilitv.player.NextEpisode
+import top.bilitv.player.PlaylistQueue
 import top.bilitv.player.StreamSelector
 import top.bilitv.player.audioMimeOf
 import top.bilitv.ui.theme.AppTheme
@@ -126,7 +127,6 @@ import top.bilitv.ui.components.rememberBackConfirm
 import top.bilitv.ui.components.formatCount
 import top.bilitv.ui.components.formatDuration
 import top.bilitv.util.AppLog
-import java.io.File
 
 /**
  * 播放页。
@@ -140,7 +140,7 @@ import java.io.File
 fun PlayerScreen(
     bvid: String,
     cid: Long,
-    onBack: () -> Unit,
+    onBack: (String, Long) -> Unit,
     /**
      * > 0 表示这是一次 PGC（番剧/影视）播放，取流走 `pgc/player/web/playurl`。
      * 默认 0 让原来的 UGC 调用点一个字都不用改 —— 那条路径是已经验证过的，不动它。
@@ -176,6 +176,7 @@ fun PlayerScreen(
     onOpenUp: ((Long, String, String) -> Unit)? = null,
     playlistId: Long = 0L,
     playlistTitle: String = "",
+    directResume: Boolean = false,
 ) {
     val context = LocalContext.current
     // 播放 VM 跟随播放页；退出即释放解码器、缓冲和定时任务。
@@ -193,7 +194,7 @@ fun PlayerScreen(
         if (liveRoomId > 0L) {
             vm.loadLive(liveRoomId, titleHint, coverHint, ownerHint)
         } else {
-            vm.load(bvid, cid, epId, titleHint, coverHint, seasonId)
+            vm.load(bvid, cid, epId, titleHint, coverHint, seasonId, directResume = directResume)
         }
     }
 
@@ -203,6 +204,7 @@ fun PlayerScreen(
         window?.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         onDispose {
             window?.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+            vm.endTouchBoost()
             vm.pause()
             /*
              * 离开播放页时**补一次落盘**。
@@ -218,7 +220,6 @@ fun PlayerScreen(
     }
 
     var panelOpen by remember { mutableStateOf(false) }
-    var logOpen by remember { mutableStateOf(false) }
 
     // 返回键统一由下面那一个 BackHandler 处理（合并成一条链，见那里的说明）
 
@@ -241,7 +242,7 @@ fun PlayerScreen(
      * 暂停 / 出错 / 面板开着 —— 这几种情况用户**就是要操作**，
      * 藏起来只会让他以为"按了没反应"。
      */
-    var controlsVisible by remember { mutableStateOf(true) }
+    var controlsVisible by remember { mutableStateOf(!vm.danmakuSettings.hideControlsOnStart) }
     var lastInputAt by remember { mutableLongStateOf(SystemClock.elapsedRealtime()) }
 
     /*
@@ -267,21 +268,34 @@ fun PlayerScreen(
      * 与其靠移动声明顺序来凑，不如**把优先级写成显式的 `when` 顺序**：
      * 一眼能看出谁先谁后，改动时也不会被"谁写在下面"这种隐式规则坑到。
      */
+    val scope = rememberCoroutineScope()
+    val remotePress = remember { RemoteKeyPress() }
+    var remoteJob by remember { mutableStateOf<Job?>(null) }
+    val cancelRemote: () -> Unit = {
+        remoteJob?.cancel(); remoteJob = null; remotePress.clear(); vm.endTouchBoost()
+    }
+    DisposableEffect(Unit) { onDispose { remoteJob?.cancel(); remotePress.clear() } }
+    LaunchedEffect(bvid, cid, epId, liveRoomId) { cancelRemote() }
+    val playerWindowFocused = androidx.compose.ui.platform.LocalWindowInfo.current.isWindowFocused
+    LaunchedEffect(playerWindowFocused) { if (!playerWindowFocused) cancelRemote() }
     val backConfirm = rememberBackConfirm()
     BackHandler(enabled = true) {
+        cancelRemote()
         when {
+            vm.previewEnded -> onBack(vm.currentBvid, vm.currentSeasonId)
+            vm.touchLocked -> { vm.touchLocked = false; controlsVisible = true }
+            vm.comments.open -> vm.comments.back()
             vm.sideOpen -> vm.closeSidebar()
             panelOpen -> panelOpen = false
-            logOpen -> logOpen = false
             vm.skipHint != null -> {
                 vm.cancelSkip()
                 panelOpen = false
             }
             controlsVisible -> controlsVisible = false
-            vm.singleBackExit -> onBack()
+            vm.singleBackExit -> onBack(vm.currentBvid, vm.currentSeasonId)
             backConfirm.message != null -> {
                 backConfirm.clear()
-                onBack()
+                onBack(vm.currentBvid, vm.currentSeasonId)
             }
             else -> backConfirm.arm("再按一下返回退出当前视频")
         }
@@ -290,9 +304,7 @@ fun PlayerScreen(
     /** 正在长按快进/快退。按住期间控制条必须钉住，否则跳到一半自己消失 */
     var seeking by remember { mutableStateOf(false) }
     var seekTarget by remember { mutableStateOf<Long?>(null) }
-    var seekOrigin by remember { mutableLongStateOf(0L) }
     var seekHintAt by remember { mutableLongStateOf(0L) }
-    var seekPreviewed by remember { mutableStateOf(false) }
     LaunchedEffect(seekHintAt, seeking) {
         if (!seeking && seekTarget != null) { delay(1_500L); seekTarget = null }
     }
@@ -327,11 +339,11 @@ fun PlayerScreen(
      * 但结论是被**锁死的映射**唯一确定的 —— 左右键既然锁死是快退/快进，
      * 而可见态又确认了它们不干这个，那"隐藏态才生效"是唯一解。
      */
-    val scope = rememberCoroutineScope()
+
     var seekJob by remember { mutableStateOf<Job?>(null) }
 
     /**
-     * 按下即跳一次；按住超过 [LONG_PRESS_DELAY_MS] 后每 [REPEAT_MS] 再跳一次。
+     * 按下和长按只更新目标时间；松手才定位，不请求遥控器预览画面。
      *
      * 用自己数节拍而不是系统按键重复（`repeatCount`）：遥控器的"长按"在模拟器上
      * 拿不到稳定的重复事件，等于把功能建在一个看不见的东西上（2026-09-29 的教训）。
@@ -339,12 +351,9 @@ fun PlayerScreen(
     val startSeekHold: (Long) -> Unit = { delta ->
         val startedAt = SystemClock.elapsedRealtime()
         var count = 1
-        seekPreviewed = false
-        seekOrigin = vm.positionMs
-        seekTarget = (seekOrigin + delta).coerceIn(0L, vm.durationMs.coerceAtLeast(0L))
+        seekTarget = (vm.positionMs + delta).coerceIn(0L, vm.durationMs.coerceAtLeast(0L))
         seekHintAt = startedAt
-        vm.seekBy(delta)
-        AppLog.i("Player", "按键快进快退 ${delta / 1000}s → ${vm.positionMs / 1000}s")
+        AppLog.i("Player", "按键进度预览：目标=${seekTarget}ms")
         seeking = true
         seekJob?.cancel()
         seekJob = scope.launch {
@@ -354,7 +363,6 @@ fun PlayerScreen(
                     val accelerated = PlaybackTuning.holdSeekStep(delta, SystemClock.elapsedRealtime() - startedAt)
                     seekTarget = ((seekTarget ?: vm.positionMs) + accelerated).coerceIn(0L, vm.durationMs.coerceAtLeast(0L))
                     seekHintAt = SystemClock.elapsedRealtime()
-                    seekPreviewed = true
                     count++
                     delay(REPEAT_MS)
                 }
@@ -374,20 +382,18 @@ fun PlayerScreen(
     val stopSeekHold: () -> Unit = {
         // cancel() 会让上面 finally 里的 `seeking = false` 跑起来，这里再写一次是
         // 为了"抬手时立刻解除钉住"，不必等协程收尾。
-        if (seekJob != null && seekPreviewed) seekTarget?.let { vm.seekTo(it) }
+        if (seekJob != null) seekTarget?.let { vm.seekTo(it) }
         seekJob?.cancel()
         seekJob = null
-        seekPreviewed = false
         seeking = false
     }
 
-    val pinned = !vm.playing || vm.error != null || panelOpen || logOpen || vm.sideOpen || seeking || vm.actionBusy || vm.qualityDialog || vm.liveLineDialog || vm.favoriteFolders != null
+    val pinned = !vm.playing || vm.error != null || panelOpen || vm.comments.open || vm.sideOpen || seeking || vm.actionBusy || vm.qualityDialog || vm.liveLineDialog || vm.favoriteFolders != null
     LaunchedEffect(vm.actionBusy) { if (!vm.actionBusy) lastInputAt = SystemClock.elapsedRealtime() }
 
     val wakeupFocus = remember { FocusRequester() }
     val firstBarFocus = remember { FocusRequester() }
     val panelFirstFocus = remember { FocusRequester() }
-    val logFirstFocus = remember { FocusRequester() }
 
     LaunchedEffect(pinned, controlsVisible) {
         if (pinned || !controlsVisible) return@LaunchedEffect
@@ -410,12 +416,12 @@ fun PlayerScreen(
      * 等一帧再请求：节点刚 compose 出来时还没 attach 到窗口，
      * 这时 requestFocus() 会抛 IllegalStateException（同 Tv.kt 里的说明）。
      */
-    LaunchedEffect(controlsVisible, panelOpen, logOpen, vm.sideOpen, vm.qualityDialog, vm.liveLineDialog, vm.favoriteFolders != null) {
-        if (vm.sideOpen || vm.qualityDialog || vm.liveLineDialog || vm.favoriteFolders != null) return@LaunchedEffect
+    LaunchedEffect(controlsVisible, panelOpen, vm.comments.open, vm.sideOpen, vm.qualityDialog, vm.liveLineDialog, vm.favoriteFolders != null, vm.previewEnded) {
+        if (vm.previewEnded) { cancelRemote(); return@LaunchedEffect }
+        if (vm.comments.open || vm.sideOpen || vm.qualityDialog || vm.liveLineDialog || vm.favoriteFolders != null) return@LaunchedEffect
         withFrameNanos { }
         runCatching {
             when {
-                logOpen -> logFirstFocus.requestFocus()
                 panelOpen -> panelFirstFocus.requestFocus()
                 controlsVisible -> firstBarFocus.requestFocus()
                 else -> wakeupFocus.requestFocus()
@@ -423,7 +429,44 @@ fun PlayerScreen(
         }
     }
 
+    val performRemote: (RemoteAction) -> Unit = { action ->
+        when (action) {
+            RemoteAction.NONE -> Unit
+            RemoteAction.PLAY -> vm.togglePlay()
+            RemoteAction.CONTROLS -> { vm.comments.close(); vm.closeSidebar(); panelOpen = false; controlsVisible = !controlsVisible }
+            RemoteAction.SETTINGS -> { vm.comments.close(); vm.closeSidebar(); controlsVisible = false; panelOpen = true }
+            RemoteAction.CATALOGUE -> vm.openSidebar(PlaybackTuning.SideAction.CATALOGUE)
+            RemoteAction.RECOMMEND -> vm.openSidebar(PlaybackTuning.SideAction.RECOMMEND)
+            RemoteAction.UP_LIST -> vm.openSidebar(PlaybackTuning.SideAction.UP_UPLOADS)
+            RemoteAction.DANMAKU -> vm.setDanmakuOn(!vm.dmOn)
+            RemoteAction.SUBTITLE -> if (!vm.live) vm.changeSubtitlesEnabled(!vm.subtitlesEnabled) else vm.showNotice("直播不提供点播字幕")
+            RemoteAction.SPEED -> if (!vm.live) vm.cycleSpeed() else vm.showNotice("直播不支持此倍速操作")
+            RemoteAction.QUALITY -> vm.openQuality()
+            RemoteAction.NEXT -> vm.playAdjacent(1)
+            RemoteAction.PREVIOUS -> vm.playAdjacent(-1)
+            RemoteAction.COMMENTS -> { controlsVisible = false; panelOpen = false; vm.openComments() }
+            RemoteAction.REFRESH -> vm.refreshStream()
+            RemoteAction.LIKE -> vm.toggleLike()
+            RemoteAction.COIN -> vm.coin()
+            RemoteAction.FAVORITE -> vm.openFavorites()
+            RemoteAction.TRIPLE -> vm.triple()
+            RemoteAction.OPEN_UP -> if (vm.ownerMid > 0L && onOpenUp != null) onOpenUp(vm.ownerMid, vm.ownerName, "") else vm.showNotice("当前内容没有可打开的UP主空间")
+            RemoteAction.BOOST -> if (!vm.beginTouchBoost()) vm.showNotice("当前状态不能临时加速")
+        }
+    }
+    val latestRemoteAction by androidx.compose.runtime.rememberUpdatedState(performRemote)
     val handlePlayerKey: (androidx.compose.ui.input.key.KeyEvent) -> Boolean = playerKeys@ { e ->
+        val nativeCode = PlayerKeyBindings.canonical(e.nativeKeyEvent.keyCode)
+        if (e.type == KeyEventType.KeyUp && remotePress.key == nativeCode) {
+            remoteJob?.cancel(); remoteJob = null
+            remotePress.release(nativeCode, e.nativeKeyEvent.isCanceled)?.let(latestRemoteAction)
+            vm.endTouchBoost()
+            return@playerKeys true
+        }
+        if (e.key == Key.Back) { cancelRemote(); return@playerKeys false }
+        if (!PlayerKeyBindings.allowed(e.nativeKeyEvent.keyCode)) return@playerKeys false
+        if (e.type == KeyEventType.KeyDown && remotePress.key == nativeCode) return@playerKeys true
+
         /*
          * ⚠️ KeyUp 不能被开头那句一刀切拦掉。
          *
@@ -447,15 +490,40 @@ fun PlayerScreen(
             return@playerKeys false
         }
         if (e.type != KeyEventType.KeyDown) return@playerKeys false
+        vm.touchLocked = false // The lock only protects touch; remote keys remain usable.
         lastInputAt = SystemClock.elapsedRealtime()
+
+        if (!controlsVisible && !vm.comments.open && !vm.sideOpen && !panelOpen && !vm.qualityDialog &&
+            !vm.liveLineDialog && vm.favoriteFolders == null && PlayerKeyBindings.editable(nativeCode, true)) {
+            val settings = vm.danmakuSettings
+            val shortOverride = if (PlayerKeyBindings.editable(nativeCode, false)) settings.playerKeyAction(nativeCode, false) else null
+            val long = settings.playerKeyAction(nativeCode, true)
+            if (shortOverride != null || long != null) {
+                cancelRemote(); stopSeekHold()
+                val enabled = when (nativeCode) { 19 -> settings.playerUpEnabled; 20 -> settings.playerDownEnabled; else -> true }
+                val short = if (!enabled) RemoteAction.NONE else shortOverride ?: when (nativeCode) {
+                    23 -> RemoteAction.PLAY; 82 -> RemoteAction.CONTROLS
+                    19, 20 -> PlayerKeyBindings.side(vm.sideActionFor(nativeCode == 19))
+                    else -> RemoteAction.NONE
+                }
+                val holdAction = long.takeIf { enabled && it != RemoteAction.NONE }
+                remotePress.start(nativeCode, if (holdAction == null) null else short, holdAction)
+                if (holdAction == null) latestRemoteAction(short)
+                else remoteJob = scope.launch {
+                    delay(PlayerKeyBindings.HOLD_MS)
+                    remotePress.fireLong()?.let(latestRemoteAction)
+                }
+                return@playerKeys true
+            }
+        }
 
         // 用户新规则：菜单键开／关控制条；从侧栏切回控制条。
         if (e.key == Key.Menu) {
             if (e.nativeKeyEvent.repeatCount == 0) {
                 stopSeekHold()
                 panelOpen = false
-                logOpen = false
-                if (vm.sideOpen) { vm.closeSidebar(); controlsVisible = true }
+                if (vm.comments.open) { vm.comments.close(); controlsVisible = true }
+                else if (vm.sideOpen) { vm.closeSidebar(); controlsVisible = true }
                 else controlsVisible = !controlsVisible
             }
             return@playerKeys true
@@ -470,7 +538,7 @@ fun PlayerScreen(
          * 而"控制栏开着"这一支仍然走上面的链条，所以这里一律放行。
          */
         if (e.key == Key.Back) return@playerKeys false
-        if (vm.sideOpen || panelOpen || logOpen || vm.qualityDialog || vm.liveLineDialog || vm.favoriteFolders != null) return@playerKeys false
+        if (vm.comments.open || vm.sideOpen || panelOpen || vm.qualityDialog || vm.liveLineDialog || vm.favoriteFolders != null) return@playerKeys false
 
         /*
          * 控制栏**开着**时，← / → 归焦点系统（在按钮行里走格子）。
@@ -531,14 +599,11 @@ fun PlayerScreen(
     val keyActivity = LocalContext.current.findActivity() as? top.bilitv.MainActivity
     DisposableEffect(keyActivity) {
         val fallback: (android.view.KeyEvent) -> Boolean = { event ->
-            when (event.keyCode) {
-                android.view.KeyEvent.KEYCODE_MENU, android.view.KeyEvent.KEYCODE_DPAD_UP,
-                android.view.KeyEvent.KEYCODE_DPAD_DOWN, android.view.KeyEvent.KEYCODE_DPAD_LEFT,
-                android.view.KeyEvent.KEYCODE_DPAD_RIGHT, android.view.KeyEvent.KEYCODE_DPAD_CENTER,
-                android.view.KeyEvent.KEYCODE_ENTER, android.view.KeyEvent.KEYCODE_NUMPAD_ENTER ->
-                    latestPlayerKey(androidx.compose.ui.input.key.KeyEvent(event))
-                else -> false
-            }
+            val code = PlayerKeyBindings.canonical(event.keyCode)
+            if (code in listOf(19, 20, 21, 22, 23, 82) ||
+                (PlayerKeyBindings.editable(code, true) && code in vm.danmakuSettings.configuredPlayerKeys))
+                latestPlayerKey(androidx.compose.ui.input.key.KeyEvent(event))
+            else false
         }
         keyActivity?.playerUnhandledKey = fallback
         onDispose { if (keyActivity?.playerUnhandledKey === fallback) keyActivity.playerUnhandledKey = null }
@@ -573,13 +638,18 @@ fun PlayerScreen(
             modifier = Modifier.fillMaxSize(),
         )
 
+        PlayerTouch(vm, Modifier.matchParentSize(), tap = { controlsVisible = !controlsVisible; lastInputAt = SystemClock.elapsedRealtime() },
+            target = { seekTarget = it; seekHintAt = SystemClock.elapsedRealtime() }, dragging = { seeking = it },
+            enabled = !vm.touchLocked && !vm.comments.open && !vm.sideOpen && !panelOpen &&
+                !vm.qualityDialog && !vm.liveLineDialog && vm.favoriteFolders == null)
+
         if (vm.error == null && vm.buffering) {
             Column(Modifier.align(Alignment.Center).zIndex(2f).background(Color(0xB3000000), RoundedCornerShape(16.dp)).padding(24.dp),
                 horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(14.dp)) {
                 CircularProgressIndicator(Modifier.size(48.dp), color = AppTheme.current.primary)
                 Text("加载中", color = Color.White, fontSize = 22.sp)
             }
-        } else if (vm.error == null && !vm.player.exo.playWhenReady && !controlsVisible && !panelOpen) {
+        } else if (vm.error == null && !vm.playWhenReady && !controlsVisible && !panelOpen && vm.danmakuSettings.showPauseIcon && !vm.touchLocked) {
             Box(Modifier.align(Alignment.Center).zIndex(2f).size(112.dp).background(Color(0x66000000), CircleShape), contentAlignment = Alignment.Center) {
                 Icon(RailIcons.Pause, "已暂停", tint = Color.White.copy(alpha = .85f), modifier = Modifier.size(68.dp))
             }
@@ -597,6 +667,7 @@ fun PlayerScreen(
             }
         }
 
+        androidx.compose.runtime.CompositionLocalProvider(androidx.compose.ui.platform.LocalDensity provides top.bilitv.ui.theme.LocalPlaybackDensity.current) {
         DanmakuLayer(
             items = vm.danmaku,
             // 注意：**不能**用 vm.positionMs —— 那个值 250ms 才刷新一次，
@@ -615,10 +686,14 @@ fun PlayerScreen(
             outlineWidth = vm.dmOutline,
             outlineMinAlpha = vm.dmOutlineAlpha,
             trackHeight = vm.dmTrackHeight,
+            performance = vm.player.performanceMode,
             modifier = Modifier.fillMaxSize(),
         )
 
         if (!vm.live && vm.subtitlesEnabled) SubtitleLayer(vm.subtitleText, vm.subtitlesEnabled, vm.subtitleStyle, Modifier.fillMaxSize())
+        if (vm.statsVisible) PlaybackStats(vm,
+            Modifier.align(Alignment.TopStart).padding(12.dp).zIndex(2f))
+        }
 
         vm.error?.let { err ->
             Column(
@@ -673,6 +748,8 @@ fun PlayerScreen(
             backConfirm.message?.let { Toast(it) }
         }
 
+        if (vm.comments.open) PlayerCommentSidebar(vm.comments, vm.danmakuSettings.playerSidebarWidth, Modifier.align(Alignment.CenterEnd).zIndex(3f))
+
         if (vm.sideOpen) {
             PlayerSidebar(vm, onClose = vm::closeSidebar, onSettings = { vm.closeSidebar(); panelOpen = true },
                 modifier = Modifier.align(Alignment.CenterEnd).zIndex(3f))
@@ -682,18 +759,9 @@ fun PlayerScreen(
             DanmakuPanel(
                 vm = vm,
                 firstFocus = panelFirstFocus,
-                modifier = Modifier.align(Alignment.CenterEnd).padding(end = 48.dp).zIndex(3f),
-            )
-        }
-
-        if (logOpen) {
-            LogPanel(
-                onClose = { logOpen = false },
-                firstFocus = logFirstFocus,
-                modifier = Modifier
-                    .align(Alignment.Center)
-                    .fillMaxSize()
-                    .padding(24.dp),
+                modifier = Modifier.align(Alignment.CenterEnd).padding(horizontal = 8.dp).zIndex(3f),
+                onLock = { vm.lockTouch(); panelOpen = false; controlsVisible = false; seekTarget = null },
+                onClose = { panelOpen = false; controlsVisible = false },
             )
         }
 
@@ -705,8 +773,11 @@ fun PlayerScreen(
             ControlBar(
                 vm = vm,
                 firstFocus = firstBarFocus,
+                onComments = { controlsVisible = false; panelOpen = false; vm.openComments() },
+                onCatalogue = { controlsVisible = false; vm.openSidebar(PlaybackTuning.SideAction.CATALOGUE) },
+                onRecommend = { controlsVisible = false; vm.openSidebar(PlaybackTuning.SideAction.RECOMMEND) },
                 onOpenUp = onOpenUp,
-                onDanmakuSettings = { panelOpen = true },
+                onDanmakuSettings = { vm.closeSidebar(); panelOpen = true },
                 modifier = Modifier.align(Alignment.BottomCenter),
             )
         } else {
@@ -725,10 +796,26 @@ fun PlayerScreen(
                     .fillMaxSize()
                     .focusRequester(wakeupFocus)
                     .focusable()
-                    .semantics { contentDescription = if (!vm.player.exo.playWhenReady) "已暂停，OK 恢复，菜单键显示控制条" else "播放中，OK 暂停，菜单键显示控制条" },
+                    .semantics { contentDescription = if (!vm.playWhenReady) "已暂停，OK 恢复，菜单键显示控制条" else "播放中，OK 暂停，菜单键显示控制条" },
             )
         }
-        PlayerActionDialogs(vm) { lastInputAt = SystemClock.elapsedRealtime(); controlsVisible = true }
+        if (!controlsVisible && !vm.live && !vm.touchLocked && seekTarget == null && vm.danmakuSettings.showProgressTime) {
+            Text("${formatDuration((vm.positionMs / 1000).toInt())} / ${formatDuration((vm.durationMs / 1000).toInt())}",
+                color = Color.White, modifier = Modifier.align(Alignment.BottomEnd).padding(16.dp))
+        }
+        PlayerActionDialogs(vm, onExit = { onBack(vm.currentBvid, vm.currentSeasonId) }) {
+            lastInputAt = SystemClock.elapsedRealtime(); controlsVisible = true
+        }
+        if (vm.previewActive && !vm.previewEnded && vm.error == null) {
+            Text("试看", color = AppTheme.current.primary, fontSize = 13.sp,
+                modifier = Modifier.align(Alignment.TopEnd).padding(16.dp)
+                    .background(Color.Black.copy(alpha = .55f), RoundedCornerShape(4.dp)).padding(horizontal = 8.dp, vertical = 4.dp))
+        }
+        if (vm.touchLocked) {
+            PlayerIconButton("触屏已锁定；长按解锁", RailIcons.Lock,
+                Modifier.align(Alignment.CenterStart).padding(start = 20.dp).zIndex(4f),
+                onLongClick = { vm.touchLocked = false; controlsVisible = true }) { vm.lockTouch() }
+        }
     }
 }
 
@@ -828,24 +915,34 @@ private fun Toast(
 }
 
 @Composable
-private fun ControlBar(vm: PlayerViewModel, firstFocus: FocusRequester, onOpenUp: ((Long, String, String) -> Unit)?, onDanmakuSettings: () -> Unit, modifier: Modifier = Modifier) {
+private fun ControlBar(vm: PlayerViewModel, firstFocus: FocusRequester, onOpenUp: ((Long, String, String) -> Unit)?, onDanmakuSettings: () -> Unit, onComments: () -> Unit, onCatalogue: () -> Unit, onRecommend: () -> Unit, modifier: Modifier = Modifier) {
     val visible = vm.barButtons.filter { when (it) {
-        PlayerBarButton.SPEED, PlayerBarButton.SUBTITLE -> !vm.live
+        PlayerBarButton.SPEED, PlayerBarButton.SUBTITLE, PlayerBarButton.COMMENTS,
+        PlayerBarButton.CATALOGUE, PlayerBarButton.RECOMMEND, PlayerBarButton.PREVIOUS,
+        PlayerBarButton.NEXT, PlayerBarButton.LOOP -> !vm.live
         PlayerBarButton.LINE -> vm.live
         PlayerBarButton.UP -> vm.ownerMid > 0 && onOpenUp != null
         PlayerBarButton.LIKE, PlayerBarButton.COIN, PlayerBarButton.FAVORITE -> vm.canInteract
         else -> true
     } }
     Column(modifier.fillMaxWidth().background(Color(0xB2000000))) {
-        if (!vm.live) ProgressLine(positionMs = vm.positionMs, durationMs = vm.durationMs)
+        if (!vm.live && vm.danmakuSettings.showPlayerProgress) TouchProgress(vm)
         Row(Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 10.dp),
             verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(16.dp)) {
             Row(Modifier.weight(1f).horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 visible.forEachIndexed { index, button ->
                     val icon = when (button) {
-                        PlayerBarButton.PLAY -> if (vm.error != null) RailIcons.Retry else if (vm.playing) RailIcons.Pause else RailIcons.Play
+                        PlayerBarButton.PLAY -> if (vm.error != null) RailIcons.Retry else if (vm.playWhenReady) RailIcons.Pause else RailIcons.Play
                         PlayerBarButton.SPEED, PlayerBarButton.QUALITY, PlayerBarButton.DANMAKU -> null
                         PlayerBarButton.SUBTITLE -> RailIcons.Subtitle
+                        PlayerBarButton.SETTINGS -> RailIcons.Settings
+                        PlayerBarButton.COMMENTS -> RailIcons.Comments
+                        PlayerBarButton.CATALOGUE -> RailIcons.Catalogue
+                        PlayerBarButton.RECOMMEND -> RailIcons.Recommend
+                        PlayerBarButton.PREVIOUS -> RailIcons.Previous
+                        PlayerBarButton.NEXT -> RailIcons.Next
+                        PlayerBarButton.REFRESH -> RailIcons.Retry
+                        PlayerBarButton.LOOP -> RailIcons.Loop
                         PlayerBarButton.LIKE -> RailIcons.Like
                         PlayerBarButton.COIN -> RailIcons.Coin
                         PlayerBarButton.FAVORITE -> RailIcons.Star
@@ -854,6 +951,7 @@ private fun ControlBar(vm: PlayerViewModel, firstFocus: FocusRequester, onOpenUp
                     }
                     val active = when (button) {
                         PlayerBarButton.DANMAKU -> vm.dmOn
+                        PlayerBarButton.LOOP -> vm.loopEnabled
                         PlayerBarButton.SUBTITLE -> vm.subtitlesEnabled
                         PlayerBarButton.LIKE -> vm.relation?.liked == true
                         PlayerBarButton.COIN -> (vm.relation?.coins ?: 0) > 0
@@ -861,7 +959,7 @@ private fun ControlBar(vm: PlayerViewModel, firstFocus: FocusRequester, onOpenUp
                         else -> false
                     }
                     val label = when (button) {
-                        PlayerBarButton.PLAY -> if (vm.error != null) "重试播放" else if (vm.playing) "暂停" else "播放"
+                        PlayerBarButton.PLAY -> if (vm.error != null) "重试播放" else if (vm.playWhenReady) "暂停" else "播放"
                         PlayerBarButton.SPEED -> "倍速 ${vm.speedLabel}"
                         PlayerBarButton.QUALITY -> "画质 ${vm.qualityLabel}"
                         PlayerBarButton.DANMAKU -> "弹幕，" + (if (vm.dmOn) "开" else "关") + "；长按设置"
@@ -871,9 +969,18 @@ private fun ControlBar(vm: PlayerViewModel, firstFocus: FocusRequester, onOpenUp
                         PlayerBarButton.FAVORITE -> "收藏" + if (active) "，已收藏" else "，选择收藏夹"
                         PlayerBarButton.UP -> "UP 主，${vm.ownerName}"
                         PlayerBarButton.LINE -> "直播线路"
+                        PlayerBarButton.SETTINGS -> "播放设置"
+                        PlayerBarButton.COMMENTS -> "视频评论"
+                        PlayerBarButton.CATALOGUE -> "分P与播放列表"
+                        PlayerBarButton.RECOMMEND -> "相关推荐"
+                        PlayerBarButton.PREVIOUS -> "播放上一个视频"
+                        PlayerBarButton.NEXT -> "播放下一个视频"
+                        PlayerBarButton.REFRESH -> "重新获取播放地址，保留进度"
+                        PlayerBarButton.LOOP -> "循环当前视频，" + if (vm.loopEnabled) "开" else "关"
                     }
                     PlayerIconButton(label, icon, Modifier.then(if (index == 0) Modifier.focusRequester(firstFocus) else Modifier),
                         active = active,
+                        buttonScale = vm.danmakuSettings.playerButtonScale,
                         value = when (button) { PlayerBarButton.QUALITY -> vm.qualityLabel; PlayerBarButton.SPEED -> vm.speedLabel; else -> null },
                         danmakuGlyph = button == PlayerBarButton.DANMAKU,
                         disabledIcon = button == PlayerBarButton.SUBTITLE && !vm.subtitlesEnabled,
@@ -889,6 +996,14 @@ private fun ControlBar(vm: PlayerViewModel, firstFocus: FocusRequester, onOpenUp
                             PlayerBarButton.FAVORITE -> vm.openFavorites()
                             PlayerBarButton.UP -> onOpenUp?.invoke(vm.ownerMid, vm.ownerName, "")
                             PlayerBarButton.LINE -> vm.openLiveLines()
+                            PlayerBarButton.SETTINGS -> onDanmakuSettings()
+                            PlayerBarButton.COMMENTS -> onComments()
+                            PlayerBarButton.CATALOGUE -> onCatalogue()
+                            PlayerBarButton.RECOMMEND -> onRecommend()
+                            PlayerBarButton.PREVIOUS -> vm.playAdjacent(-1)
+                            PlayerBarButton.NEXT -> vm.playAdjacent(1)
+                            PlayerBarButton.REFRESH -> vm.refreshStream()
+                            PlayerBarButton.LOOP -> vm.toggleLoop()
                         }
                     }
                 }
@@ -914,7 +1029,7 @@ private fun ControlBar(vm: PlayerViewModel, firstFocus: FocusRequester, onOpenUp
  * |---|---|
  * | `duration <= 0`（时长还没拿到 / 直播残留） | 除零 → `Infinity`/`NaN` → 填充宽度变成非数值，进度条整条消失或铺满 |
  * | `position > duration`（拖到末尾那几秒 / 换线路后时间轴重置） | `fraction > 1` → 进度条**画出容器外**（真的会溢出，`fillMaxWidth(1.4f)` 不是被夹住） |
- * | `position < 0`（`currentPosition` 在过渡态返回 `C.TIME_UNSET` 附近的负值，见 [PlayerViewModel.seekBy]） | 负数填充 → 视觉上"倒退一格"闪一下 |
+ * | `position < 0`（`currentPosition` 在过渡态返回 `C.TIME_UNSET` 附近的负值） | 负数填充 → 视觉上"倒退一格"闪一下 |
  *
  * ⚠️ 时长未知时返回 `0f`（空条）而不是 `1f`（满条）：满条等于告诉用户"播完了"。
  *
@@ -1066,13 +1181,11 @@ private const val REPEAT_MS = 300L
  * 排查成本从「来回猜」降到「看一眼」。这不是给终端用户的功能，是给排障用的。
  */
 @Composable
-private fun LogPanel(
+internal fun LogPanel(
     onClose: () -> Unit,
     firstFocus: FocusRequester,
     modifier: Modifier = Modifier,
 ) {
-    val context = LocalContext.current
-    val clipboard = LocalClipboardManager.current
     var text by remember { mutableStateOf(AppLog.snapshot()) }
     var toast by remember { mutableStateOf<String?>(null) }
 
@@ -1111,7 +1224,7 @@ private fun LogPanel(
             )
             Spacer(Modifier.width(16.dp))
             /*
-             * 路径是可压缩的那一个，右边五个按钮不是。
+             * 路径可压缩，右边的操作按钮保持单行。
              *
              * 原来是「路径 + weight(1f) 的空白」—— 空白先占满，行宽不够时
              * 就只能去挤按钮，结果「清空」被压成了竖排的「清 / 空」。
@@ -1132,14 +1245,6 @@ private fun LogPanel(
                 text = AppLog.snapshot()
                 toast = null
             }
-            Spacer(Modifier.width(10.dp))
-            BarButton("复制") {
-                val all = AppLog.snapshot()
-                clipboard.setText(AnnotatedString(all))
-                toast = "已复制全部日志到剪贴板（共 ${all.length} 字）"
-            }
-            Spacer(Modifier.width(10.dp))
-            BarButton("分享") { toast = shareLog(context) }
             Spacer(Modifier.width(10.dp))
             BarButton("字号 ${sizeNames[sizeIdx]}") {
                 sizeIdx = (sizeIdx + 1) % sizes.size
@@ -1180,42 +1285,8 @@ private fun LogPanel(
             ),
             modifier = Modifier
                 .fillMaxSize()
-                .verticalScroll(scroll),
+                .scrollWithScrollbar(scroll),
         )
-    }
-}
-
-/**
- * 把日志文件分享出去，返回一句给用户看的执行结果。
- *
- * 走 [FileProvider] 而不是直接给 `file://` —— Android 7 起后者会抛
- * `FileUriExposedException`：`file://` 会把私有目录无授权地暴露给接收方。
- *
- * 电视上通常没有可接收的应用，`startActivity` 会抛 `ActivityNotFoundException`，
- * 所以整个流程包在 `runCatching` 里，失败也要给用户一句明白话而不是闪退。
- */
-private fun shareLog(context: Context): String {
-    val path = AppLog.exportPath() ?: return "日志文件不存在，先播一个视频"
-    return runCatching {
-        val uri = FileProvider.getUriForFile(
-            context,
-            "${context.packageName}.fileprovider",
-            File(path),
-        )
-        val send = Intent(Intent.ACTION_SEND).apply {
-            type = "text/plain"
-            putExtra(Intent.EXTRA_STREAM, uri)
-            putExtra(Intent.EXTRA_SUBJECT, "BBTV 运行日志")
-            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-        }
-        context.startActivity(
-            Intent.createChooser(send, "分享日志").addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-        )
-        "已打开分享面板，选微信 / 邮件发出去即可"
-    }.getOrElse { e ->
-        AppLog.e("Log", "分享日志失败", e)
-        // 电视上十有八九是这个：没有能接收分享的应用
-        "这台设备没有可用的分享目标，用「复制」吧（${e.javaClass.simpleName}）"
     }
 }
 
@@ -1225,16 +1296,9 @@ private fun shareLog(context: Context): String {
  * 与设置页共用遥控器选项行，修改后立即更新播放器。
  */
 @Composable
-private fun DanmakuPanel(vm: PlayerViewModel, firstFocus: FocusRequester, modifier: Modifier = Modifier) {
-    LaunchedEffect(vm) { vm.loadSubtitleMetadata() }
-    Column(modifier.width(420.dp).heightIn(max = 480.dp).clip(RoundedCornerShape(16.dp))
-        .background(Color(0xE6101016)).verticalScroll(rememberScrollState()).padding(16.dp)) {
-        Text("弹幕/字幕设置", color = Color.White, style = MaterialTheme.typography.titleMedium)
-        top.bilitv.ui.settings.DanmakuSettingsPage(vm.danmakuSettings, firstFocus = firstFocus,
-            onChanged = vm::reloadDanmakuSettings, subtitleTracks = vm.subtitleTracks,
-            subtitleStatus = if (vm.live) "直播不提供点播外挂字幕" else vm.subtitleStatus,
-            onSubtitleRetry = if (vm.live) null else ({ vm.loadSubtitleMetadata(force = true) }))
-    }
+private fun DanmakuPanel(vm: PlayerViewModel, firstFocus: FocusRequester, modifier: Modifier = Modifier, onLock: () -> Unit, onClose: () -> Unit) {
+    PlaybackSettingsPanel(vm, firstFocus, modifier, onLock, onClose)
+
 }
 
 private tailrec fun Context.findActivity(): Activity? = when (this) {
@@ -1272,8 +1336,7 @@ data class PlayError(val title: String, val detail: String = "")
  * | `title` | `titleHint` | 顶部标题，省一次请求 |
  * | `cover` | `coverHint` | 观看记录封面 |
  *
- * **注意**：走连播时 `seasonId` 要沿用**当前**的（这部剧不变），
- * 所以这个类不带 `seasonId`，切集时由 `continueToNext` 手动带上。
+ * `seasonId` 标识目标剧集；本剧分集未提供时沿用当前剧集，跨作品不得沿用。
  */
 internal data class NextTarget(
     val bvid: String,
@@ -1335,12 +1398,32 @@ private fun codecFamily(codecs: String): String = when {
 class PlayerViewModel(app: Application) : AndroidViewModel(app) {
 
     private val graph = app as BiliTvApp
+    val comments = PlayerComments(graph.api, viewModelScope)
     val player = BiliPlayer(app)
 
     var subtitleTracks by mutableStateOf<List<top.bilitv.data.model.SubtitleTrack>>(emptyList())
         private set
     var subtitleText by mutableStateOf("")
         private set
+    var statsVisible by mutableStateOf(graph.settings.advancedMode && graph.settings.showPlaybackStats)
+        private set
+    var endAction by mutableStateOf(graph.settings.playbackEndAction)
+        private set
+    private var lastNonLoopAction = endAction.takeUnless { it == PlaybackTuning.EndAction.LOOP } ?: PlaybackTuning.EndAction.PAUSE
+    val loopEnabled: Boolean get() = endAction == PlaybackTuning.EndAction.LOOP && !previewActive && !live
+
+    private fun applyEndAction() {
+        endAction = graph.settings.playbackEndAction
+        if (endAction != PlaybackTuning.EndAction.LOOP) lastNonLoopAction = endAction
+        player.exo.repeatMode = if (loopEnabled) Player.REPEAT_MODE_ONE else Player.REPEAT_MODE_OFF
+    }
+    fun changeEndAction(action: PlaybackTuning.EndAction) {
+        graph.settings.playbackEndAction = action
+        applyEndAction()
+        showNotice(if (previewActive && action == PlaybackTuning.EndAction.LOOP) "已保存循环设置；试看片段仍会到期停止"
+            else "播放完成后：${action.label}")
+    }
+    fun toggleLoop() = changeEndAction(if (endAction == PlaybackTuning.EndAction.LOOP) lastNonLoopAction else PlaybackTuning.EndAction.LOOP)
     var subtitleStyle by mutableStateOf(graph.settings.subtitleStyle)
         private set
     var subtitlesEnabled by mutableStateOf(graph.settings.subtitleEnabled)
@@ -1451,6 +1534,8 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
     var playlistTitle = ""
     private var catalogueDetail: VideoDetail? = null
     private var cataloguePgc: PgcDetail? = null
+    private val playlistQueue = PlaylistQueue()
+    private var adjacentJob: Job? = null
     private var sideJob: Job? = null
     private var sidePage = 0
     private var sideAction = PlaybackTuning.SideAction.CATALOGUE
@@ -1463,7 +1548,20 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
         else if (up) s.playerUpAction else s.playerDownAction
     }
 
+    fun openComments() {
+        if (live) { showNotice("直播没有视频评论侧栏"); return }
+        closeSidebar()
+        val requestedEp = epId; val requestedSeason = seasonId; val requestedToken = token
+        comments.show {
+            if (requestedToken != token) throw CancellationException()
+            if (requestedEp <= 0L) aid
+            else cataloguePgc?.episodes?.firstOrNull { it.epId == requestedEp }?.aid?.takeIf { it > 0L }
+                ?: graph.api.pgcDetail(requestedSeason, requestedEp)?.episodes?.firstOrNull { it.epId == requestedEp }?.aid ?: 0L
+        }
+    }
+
     fun closeSidebar() {
+        adjacentJob?.cancel(); adjacentJob = null
         sideOpen = false
         sideGeneration++
         sideJob?.cancel()
@@ -1471,6 +1569,7 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun openSidebar(action: PlaybackTuning.SideAction) {
+        comments.close()
         closeSidebar()
         sideAction = action
         sideOpen = true
@@ -1506,6 +1605,7 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
             try {
                 val items: List<NextTarget>
                 var more = false
+                var playlistPage: top.bilitv.data.model.FavResourcePage? = null
                 val label: String
                 when (sideSource) {
                     "recommend" -> {
@@ -1528,21 +1628,26 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
                         label = "合集 · ${d.collectionTitle}"
                     }
                     "playlist" -> {
-                        items = (graph.api.favResources(playlistId, page) ?: error("播放列表暂时加载失败")).map { it.sideTarget() }
-                        more = items.isNotEmpty()
+                        val result = graph.api.favResourcePage(playlistId, page) ?: error("播放列表暂时加载失败")
+                        playlistPage = result
+                        items = result.items.map { it.sideTarget() }
+                        more = result.hasMore
                         label = "播放列表 · $playlistTitle"
                     }
                     else -> {
                         if (ownerMid <= 0) error("这段内容没有可用的UP主投稿列表")
                         val d = graph.api.upVideos(ownerMid, page) ?: error("UP主投稿暂时加载失败，请检查登录或稍后重试")
                         items = d.items.map { it.sideTarget() }
-                        more = items.isNotEmpty() && (d.total <= 0 || page * 20 < d.total)
+                        more = d.hasMore
                         label = "UP主投稿 · $ownerName"
                     }
                 }
                 if (myToken != token || generation != sideGeneration || !sideOpen) return@launch
                 sideTitle = label
                 sideItems = (sideItems + items).distinctBy { if (it.epId > 0) "ep${it.epId}" else if (it.seasonId > 0) "ss${it.seasonId}" else it.bvid }
+                if (sideSource == "playlist") {
+                    playlistQueue.record(playlistId, page, playlistPage!!)
+                }
                 sidePage = page
                 sideHasMore = more
                 AppLog.i("PlayerSidebar", "$sideSource 第$page 页 ${items.size} 条，累计 ${sideItems.size} 条，分P ${sideParts.size} 条")
@@ -1601,6 +1706,10 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
 
     var error by mutableStateOf<PlayError?>(null)
         private set
+    var previewActive by mutableStateOf(false)
+        private set
+    var previewEnded by mutableStateOf(false)
+        private set
     var positionMs by mutableLongStateOf(0L)
         private set
 
@@ -1615,6 +1724,8 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
     var durationMs by mutableLongStateOf(0L)
         private set
     var playing by mutableStateOf(false)
+        private set
+    var playWhenReady by mutableStateOf(false)
         private set
     var buffering by mutableStateOf(true)
         private set
@@ -1633,6 +1744,9 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
     /** 一次性提示（几秒后自动消失），比如「已自动切到 AVC」 */
     var notice by mutableStateOf<String?>(null)
         private set
+    var touchLocked by mutableStateOf(false)
+    private var autoQualityFrom: Int? = null
+    fun lockTouch() { touchLocked = true; showNotice("触屏已锁定，长按锁图标或按返回键解锁") }
 
     /** 当前在播的编码 + 清晰度，如 `HEVC 480P`。既给用户看，也是截图排查的线索 */
     var codecLabel by mutableStateOf("")
@@ -1691,6 +1805,8 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
 
     fun reloadDanmakuSettings() {
         val s = graph.settings
+        statsVisible = s.advancedMode && s.showPlaybackStats
+        applyEndAction()
         val subtitleSelectionChanged = subtitlesEnabled != s.subtitleEnabled || subtitleLanguage != s.subtitleLanguage
         subtitleLanguage = s.subtitleLanguage
         subtitleStyle = s.subtitleStyle; subtitlesEnabled = s.subtitleEnabled
@@ -1792,7 +1908,7 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
         private set
 
     /** 当前倍速的显示文本，如 `1.25x` */
-    val speedLabel: String get() = PlaybackTuning.speedLabel(speedIndex)
+    val speedLabel: String get() = if (boostSpeed != null) "2.0x" else PlaybackTuning.speedLabel(speedIndex)
 
     /**
      * 当前画面比例档位 id（`fit`/`fill`/`zoom`）。初值来自设置。
@@ -1867,25 +1983,23 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
 
     private var durationHintMs = 0L
     private var sponsorRequested = false
+    private var sponsorJob: Job? = null
+    private var communitySkipSegments = emptyList<top.bilitv.data.sponsor.SponsorSegment>()
+    private var skipPolicy: Triple<Boolean, Boolean, Set<top.bilitv.data.sponsor.SponsorCategory>>? = null
+    private var renderedFirstFrame = false
     private var loadedKey: String? = null
     private var liveRoomId = 0L
 
     /** PGC 的 seasonId。自动连播拿全集列表要用（0 = 非 PGC） */
     private var seasonId = 0L
+    val currentBvid: String get() = bvid
+    val currentEpId: Long get() = epId
+    val currentLiveRoomId: Long get() = if (live) liveRoomId else 0L
+    val currentSeasonId: Long get() = if (epId > 0L) seasonId else 0L
+    var resumeChoiceMs by mutableStateOf<Long?>(null)
+        private set
 
-    /**
-     * 自动连播用的"下一集/下一P"。
-     *
-     * ## 为什么在 `load()` 里就算好，而不是等播完再算
-     *
-     * - **UGC**：`pages` 就在 `videoDetail` 的响应里，`load()` 本来就发了这个请求，
-     *   顺手算一下是零成本。等播完再算 = 重新发一次详情请求（几十 KB + 几百毫秒）。
-     * - **PGC**：`episodes` 要多发一次 `pgcDetail`。放在 `load()` 里发，它和取流**并行**；
-     *   等播完再发就变成"片尾曲放完 → 黑屏转圈 → 下一集"，用户会觉得卡。
-     *
-     * 存的是"下一集的四元组"，播完直接用，不在这里重算。
-     * 结构对齐 `NextTarget`（见下）。**注意它可能是 null**（最后一集 / 列表拿不到）。
-     */
+    /** 已有详情算出的下一分P/分集兜底；合集与收藏列表共用playAdjacent的实际顺序。 */
     private var nextTarget: NextTarget? = null
 
     /**
@@ -1917,6 +2031,8 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
      * 共用一个 flag 会让"刚换过地址"的播放器带着"已经试过"的状态去播下一个视频。
      */
     private var triedP2pRetry = false
+
+    private val stopSkipSettingsObserver = graph.settings.observeChanges { refreshSkipSegments() }
 
     init {
         player.onPlaybackStutter = { dropped, elapsed, fps -> lowerQualityIfNeeded(dropped, elapsed, fps) }
@@ -2001,11 +2117,16 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
             AppLog.w("VM", "已降级为静音播放")
         }
         player.exo.addListener(object : Player.Listener {
+            override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) {
+                this@PlayerViewModel.playWhenReady = playWhenReady
+            }
             override fun onIsPlayingChanged(isPlaying: Boolean) {
                 playing = isPlaying
+                if (!isPlaying) { planner.onUserSeek(); skipHint = null }
             }
 
             override fun onRenderedFirstFrame() {
+                renderedFirstFrame = true
                 if (live) pendingLiveLine?.let { line ->
                     activeLiveLine = line; pendingLiveLine = null
                     codecLabel = "${line.codec.uppercase()} 直播"
@@ -2016,6 +2137,12 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
                 if (!live && actual != null && format?.width == actual.width && format.height == actual.height) {
                     activeQuality = actual.qualityId
                     pendingQuality = null
+                    autoQualityFrom?.let { previous ->
+                        val from = QualityOptions.compactLabel(previous, playInfo?.qualityLabels?.get(previous).orEmpty())
+                        showNotice(if (previous != actual.qualityId) "为保证流畅，画质由 $from 调至 $qualityLabel"
+                            else "画质调整未生效，继续使用 $qualityLabel")
+                        autoQualityFrom = null
+                    }
                     AppLog.i("Player", "实际画质=$qualityLabel（首帧确认）")
                 }
                 // 首帧出来之后才去查广告片段：不能挡着起播（docs/03 §3.2 第 11 条）
@@ -2067,6 +2194,9 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
          * 回到默认倍速 —— 那是"换了个片子看"，不是"继续快看"。
          */
         keepSpeed: Boolean = false,
+        directResume: Boolean = false,
+        refreshAtMs: Long? = null,
+        refreshPaused: Boolean = false,
     ) {
         /*
          * key 里带上 epId：同一部剧切集时 bvid 是空的、cid 会变，但万一两集的 cid
@@ -2076,11 +2206,14 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
          * 两处各写一份字符串拼接，改一处漏一处只是时间问题。
          */
         val key = History.keyOf(bvid, cid, epId)
-        if (loadedKey == key) {
+        if (loadedKey == key && refreshAtMs == null) {
             // 离开播放页时暂停了，回来接着播（ExoPlayer 实例是复用的，进度不丢）
-            player.exo.playWhenReady = true
+            player.exo.playWhenReady = resumeChoiceMs == null && !previewEnded
             return
         }
+        finishTouchSeek(cancel = true); endTouchBoost()
+        resumeChoiceMs = null
+        previewActive = false; previewEnded = false
         loadedKey = key
 
         loadJob?.cancel()
@@ -2090,12 +2223,19 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
         buffering = true
         durationMs = 0L
         closeSidebar()
+        comments.reset()
         catalogueDetail = null
         cataloguePgc = null
         sideParts = emptyList()
         sideItems = emptyList()
 
-        adaptiveQuality = null
+        if (refreshAtMs == null) {
+            enteredPreferredQuality = graph.settings.preferredQuality
+            enteredPreferredAudio = graph.settings.preferredAudioQuality.id
+            adaptiveQuality = null
+        } else adaptiveQuality = activeQuality.takeIf { it > 0 } ?: adaptiveQuality
+        autoQualityFrom = null
+        touchLocked = false
         activeQuality = 0
         qualityDialog = false
         pendingQuality = null
@@ -2136,6 +2276,8 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
         cloudDmRules = top.bilitv.data.danmaku.DanmakuRules()
         loadedSegments.clear()
         planner.reset()
+        sponsorJob?.cancel(); sponsorJob = null
+        communitySkipSegments = emptyList(); skipPolicy = null; renderedFirstFrame = false
         sponsorRequested = false
         skipHint = null
         muted = false
@@ -2216,13 +2358,13 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
                 }
                 this@PlayerViewModel.cid = realCid
                 webHealth.await()
-                play = graph.api.pgcPlayInfo(epId, realCid)
+                play = graph.api.pgcPlayInfo(epId, realCid, accepts = { pickSelection(it) != null })
                 if (play == null) {
                     AppLog.e("VM", "PGC playurl 返回空（未登录时属于正常现象，已登录=${graph.api.isLoggedIn()}）")
                     error = PlayError(
                         if (graph.api.isLoggedIn()) "拿不到播放地址" else "番剧与影视需要登录后播放",
                         if (graph.api.isLoggedIn()) {
-                            "PGC playurl 返回空或解析失败，点「日志」看详情"
+                            "PGC playurl 返回空或解析失败，可在高级模式的存储与日志页面查看诊断记录"
                         } else {
                             "B 站对番剧/影视的取流要求带账号信息。回到上一页点「去登录」，扫码之后就能播。"
                         },
@@ -2240,6 +2382,7 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
                 title = detail?.title.orEmpty()
                 ownerName = detail?.ownerName.orEmpty()
                 ownerMid = detail?.ownerMid ?: 0L
+                if (!keepSpeed) speedIndex = graph.settings.speedForUp(ownerMid)
                 cover = detail?.cover.orEmpty()
                 viewCount = detail?.viewCount ?: 0L
                 danmakuCount = detail?.danmakuCount ?: 0L
@@ -2252,7 +2395,7 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
                  * 之前只是拿到了没存。用 `NextEpisode.nextPage` 按 cid 找下一项，
                  * 最后一 P / 找不到都返回 null（不会回绕重播）。
                  */
-                val nextPage = NextEpisode.nextPage(detail?.pages.orEmpty(), cid)
+                val nextPage = NextEpisode.nextPage(detail?.pages.orEmpty(), cid.takeIf { it > 0 } ?: detail?.cid ?: 0)
                 nextTarget = nextPage?.let {
                     NextTarget(bvid = bvid, cid = it.cid, epId = 0L, title = it.title, cover = cover)
                 }
@@ -2268,21 +2411,35 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
                     return@launch
                 }
                 this@PlayerViewModel.cid = realCid
+                val previewCheck = if (detail?.chargingExclusive == true || detail?.paidContent == true)
+                    async { graph.api.previewState(bvid, realCid) } else null
                 webHealth.await()
-                play = graph.api.playInfo(bvid, realCid)
+                val result = graph.api.playInfo(bvid, realCid, aid, accepts = { pickSelection(it) != null })
+                if (result == null) previewCheck?.cancel()
+                play = result?.copy(isPreview = result.isPreview || previewCheck?.await() == true)
             }
 
             if (myToken != token) return@launch
             if (play == null) {
                 AppLog.e("VM", "playurl 返回空或解析失败")
-                error = PlayError("拿不到播放地址", "playurl 接口返回空或解析失败，点「日志」看详情")
+                val charged = catalogueDetail?.chargingExclusive == true
+                error = PlayError(if (charged) "充电专属视频暂时无法播放" else "拿不到播放地址",
+                    if (charged) "当前接口没有提供可播放的完整视频或试看片段，请在哔哩哔哩确认账号观看权限。"
+                    else "playurl 接口返回空或解析失败，可在高级模式的存储与日志页面查看诊断记录")
+                return@launch
+            }
+
+            try { top.bilitv.data.model.PlaybackPreview.requireBound(play) }
+            catch (_: java.io.IOException) {
+                error = PlayError("暂时无法安全播放试看片段", "接口未提供明确的试看时限，请在哔哩哔哩确认观看权限。")
                 return@launch
             }
 
             val resolvedKey = History.keyOf(bvid, realCid, epId)
             loadedKey = resolvedKey
 
-            durationHintMs = play.durationMs
+            durationHintMs = top.bilitv.data.model.PlaybackPreview.duration(play.isPreview, 0, play.durationMs, play.previewLimitMs)
+            play.notice?.let(::showNotice)
             AppLog.i(
                 "VM",
                 "playurl 返回：视频 ${play.videos.size} 条 / 音频 ${play.audios.size} 条 / 时长 ${play.durationMs}ms"
@@ -2295,6 +2452,8 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
             }
 
             playInfo = play
+            previewActive = play.isPreview
+            refreshSkipSegments(force = true)
 
             val selection = pickSelection(play)
             if (selection == null) {
@@ -2307,7 +2466,13 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
             }
 
             startPlayback(selection)
-            resumeIfNeeded(resolvedKey, play.durationMs)
+            if (refreshAtMs != null) {
+                val target = refreshAtMs.coerceIn(0, durationHintMs.takeIf { it > 0 } ?: refreshAtMs.coerceAtLeast(0))
+                player.exo.seekTo(target); samplePosition(target)
+                if (refreshPaused) player.exo.pause()
+                showNotice("播放地址已刷新")
+            } else if (!previewActive) resumeIfNeeded(resolvedKey, play.durationMs, ask = graph.settings.askResume && !directResume && !keepSpeed)
+            else showNotice("正在播放接口提供的试看片段")
             startTicker(myToken)
             val socialToken = socialGeneration
             if (canInteract && graph.api.canWriteVideoActions()) launch {
@@ -2372,26 +2537,33 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
      *
      * @param roomId 直播间号（长号）。
      */
-    fun loadLive(roomId: Long, titleHint: String = "", coverHint: String = "", ownerHint: String = "") {
+    fun loadLive(roomId: Long, titleHint: String = "", coverHint: String = "", ownerHint: String = "", resumePlaying: Boolean = true, qualityHint: Int = 10000) {
+        player.exo.repeatMode = Player.REPEAT_MODE_OFF
+        touchLocked = false
+        autoQualityFrom = null
         val key = "live#$roomId"
         if (loadedKey == key) {
             // 从直播间退出去又进来（ExoPlayer 实例复用），接着播
-            player.exo.playWhenReady = true
+            player.exo.playWhenReady = resumeChoiceMs == null && !previewEnded
             return
         }
+        finishTouchSeek(cancel = true); endTouchBoost()
+        resumeChoiceMs = null
+        previewActive = false; previewEnded = false
         loadedKey = key
 
         loadJob?.cancel()
         ticker?.cancel()
         resetSubtitles()
         closeSidebar()
+        comments.reset()
         catalogueDetail = null
         cataloguePgc = null
         player.stop()
         buffering = true
 
         this.liveRoomId = roomId
-        activeLiveLine = null; pendingLiveLine = null; livePlayInfo = null; requestedLiveQuality = 10000
+        activeLiveLine = null; pendingLiveLine = null; livePlayInfo = null; requestedLiveQuality = qualityHint
         liveDmJob?.cancel(); liveDmJob = null
         this.bvid = ""
         this.cid = 0L
@@ -2409,6 +2581,8 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
         cloudDmRules = top.bilitv.data.danmaku.DanmakuRules()
         loadedSegments.clear()
         planner.reset()
+        sponsorJob?.cancel(); sponsorJob = null
+        communitySkipSegments = emptyList(); skipPolicy = null; renderedFirstFrame = false
         sponsorRequested = true          // 直播不查广告，直接标记"已处理"
         skipHint = null
         muted = false
@@ -2465,6 +2639,7 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
             AppLog.i("VM", "选中直播线路：${line.protocol}/${line.format}/${line.codec} qn=${line.qn}")
             codecLabel = "${line.codec.uppercase()} 直播"
             player.playLive(line.urls.first(), line.isHls)
+            player.exo.playWhenReady = resumePlaying
             living = true
             startTicker(myToken)
             startLiveDanmaku(myToken)
@@ -2481,7 +2656,7 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
         if (play == null) {
             error = PlayError(
                 "拿不到直播地址",
-                "取流接口没返回可解析的数据（可能是接口变了或风控），点「日志」看详情",
+                "取流接口没返回可解析的数据（可能是接口变了或风控），可在高级模式的存储与日志页面查看诊断记录",
             )
             return null
         }
@@ -2506,7 +2681,7 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
         if (line == null) {
             error = PlayError(
                 "这个直播间没有可用的播放线路",
-                "取流接口给回了 ${play.lines.size} 条线路，但地址都拼不出来。点「日志」看详情",
+                "取流接口给回了 ${play.lines.size} 条线路，但地址都拼不出来。可在高级模式的存储与日志页面查看诊断记录",
             )
             return null
         }
@@ -2531,7 +2706,7 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
      * 算。跳转之后要告诉广告调度器"位置是被人为改过的"，
      * 否则它会拿着旧位置上的判断结果往新位置上套。
      */
-    private fun resumeIfNeeded(key: String, totalMs: Long) {
+    private fun resumeIfNeeded(key: String, totalMs: Long, ask: Boolean) {
         val saved = history.get(key)
         val target = History.resumeTargetMs(saved, totalMs)
         if (target == null) {
@@ -2541,12 +2716,29 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
             )
             return
         }
+        if (ask) {
+            resumeChoiceMs = target
+            player.exo.pause()
+            return
+        }
+        applyResume(target)
+    }
+
+    fun chooseResume(fromStart: Boolean) {
+        val saved = resumeChoiceMs ?: return
+        resumeChoiceMs = null
+        applyResume(if (fromStart) 0L else saved)
+        if (fromStart) persistProgress(force = true)
+        if (error == null) player.exo.play()
+    }
+
+    private fun applyResume(target: Long) {
         player.exo.seekTo(target)
         // 立刻采样：否则在下一个 tick 之前（最多 250ms）进度条和弹幕还停在 0
         samplePosition(target)
         planner.onUserSeek()
-        AppLog.i("VM", "续播到 ${target}ms（总长 ${totalMs}ms）")
-        showNotice("已从上次的 ${formatDuration((target / 1000).toInt())} 继续播放")
+        AppLog.i("VM", "续播到 ${target}ms")
+        showNotice(if (target == 0L) "已从头播放" else "已从上次的 ${formatDuration((target / 1000).toInt())} 继续播放")
     }
 
     /**
@@ -2555,7 +2747,7 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
      * ## 为什么用 `positionMs` 而不是现读 `player.exo.currentPosition`
      *
      * 播放器在过渡态（刚 seek 完还在重缓冲 / 时间线未就绪）时，`currentPosition`
-     * 返回的是 `C.TIME_UNSET`，一个**极小的负数**（见 [seekBy] 的说明）。
+     * 返回的是 `C.TIME_UNSET`，一个**极小的负数**。
      * 拿它去写记录，历史列表上会出现一条"看到 -9223372036854775808 秒"的记录，
      * 而且它会把本来正确的续播点覆盖掉。
      *
@@ -2573,10 +2765,10 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
          * 2. 真写进去的话，历史列表会多出一条点了就跳转到**已经播完的时间点**的记录，
          *    而那个位置在一场新的直播里根本不存在。用户会看到一个永远黑屏的历史条目。
          */
-        if (live) return
+        if (live || resumeChoiceMs != null) return
         val key = loadedKey ?: return
         val pos = positionMs
-        if (pos <= 0L) return
+        if (pos < 0L || (pos == 0L && !force)) return
         if (!force && pos == lastSavedMs) return
         lastSavedMs = pos
 
@@ -2586,13 +2778,14 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
                 bvid = bvid,
                 cid = cid,
                 epId = epId,
+                seasonId = currentSeasonId,
                 // PGC 的标题在 titleHint 里（title 也是它，但兜一层更稳）
                 title = title.ifBlank { titleHint },
                 cover = cover.ifBlank { coverHint },
                 owner = ownerName,
                 badge = videoBadge,
                 progressMs = pos,
-                durationMs = durationMs.takeIf { it > 0L } ?: durationHintMs,
+                durationMs = top.bilitv.data.model.PlaybackPreview.duration(previewActive, durationMs, durationHintMs, playInfo?.previewLimitMs),
                 updatedAtSec = System.currentTimeMillis() / 1000,
             )
         )
@@ -2607,6 +2800,9 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
      *   它会和设置页的「只用 AVC（兼容模式）」**取或** —— 用户主动打开的开关
      *   必须一次生效，不能"先崩一次、自动降级、下次才记住"。
      */
+    private var enteredPreferredQuality = graph.settings.preferredQuality
+    private var enteredPreferredAudio = graph.settings.preferredAudioQuality.id
+
     private fun pickSelection(play: PlayInfo, onlyAvc: Boolean = false): StreamSelector.Selection? =
         StreamSelector.select(
             play = play,
@@ -2614,19 +2810,22 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
                 DecoderSupport.canDecodeVideo(videoMimeOf(it.codecs), it.width, it.height)
             },
             canAudio = { DecoderSupport.canDecodeAudio(audioMimeOf(it.codecs)) },
-            qualityId = adaptiveQuality ?: graph.settings.preferredQuality.takeIf { q -> QualityOptions.isExplicit(q) },
+            qualityId = adaptiveQuality ?: enteredPreferredQuality.takeIf { q -> QualityOptions.isExplicit(q) },
             preferHevc = graph.settings.preferHevc,
             onlyAvc = onlyAvc || graph.settings.forceAvc,
+            audioQualityId = enteredPreferredAudio,
         )
 
     /** 起播并把"在播什么"记到界面上 —— 降级换编码后这里会跟着变，一眼能看出走到哪一级 */
     private fun startPlayback(sel: StreamSelector.Selection) {
         codecLabel = "${codecFamily(sel.video.codecs)} ${QualityOptions.compactLabel(sel.video.qualityId, playInfo?.qualityLabels?.get(sel.video.qualityId).orEmpty(), sel.video.height)}"
         // 线路策略开关在**每次起播时**读一次：改完设置不用重启应用，下一个视频就生效
+        applyEndAction()
         player.play(
             sel,
             skipP2p = graph.settings.skipP2p,
             cdnPreference = graph.settings.cdnPreference,
+            previewEndMs = playInfo?.previewLimitMs.takeIf { previewActive },
         )
         /*
          * 应用倍速（2026-09-29）。
@@ -2640,6 +2839,7 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
          * 见 `continueToNext` —— 这是刻意的）。
          */
         player.setSpeed(PlaybackTuning.speedOf(speedIndex))
+        if (resumeChoiceMs != null) player.exo.pause()
     }
 
     private fun lowerQualityIfNeeded(dropped: Int, elapsedMs: Long, fps: Float) {
@@ -2651,15 +2851,18 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
         val lower = StreamSelector.lowerResolution(play.videos, current) {
             (!(graph.settings.forceAvc || triedAvcFallback) || it.isAvc) && DecoderSupport.canDecodeVideo(videoMimeOf(it.codecs), it.width, it.height)
         } ?: return
+        val previous = adaptiveQuality
         adaptiveQuality = lower.qualityId
-        val selection = pickSelection(play, onlyAvc = triedAvcFallback) ?: return
+        val selection = pickSelection(play, onlyAvc = triedAvcFallback)
+        if (selection == null) { adaptiveQuality = previous; return }
         val position = player.exo.currentPosition.coerceAtLeast(0L)
         lastAdaptiveChange = now
+        autoQualityFrom = current.qualityId
         AppLog.i("PlaybackPerf", "持续掉帧，自动降档 ${current.width}x${current.height} -> ${selection.video.width}x${selection.video.height}；保留进度=${position}ms")
         startPlayback(selection)
         player.exo.seekTo(position)
         samplePosition(position)
-        showNotice("播放不够流畅，已降低画质；可在播放设置关闭自动降档")
+        showNotice("播放不够流畅，正在调整画质")
     }
 
     /**
@@ -2672,8 +2875,9 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
      */
     private fun fallbackToAvc(e: androidx.media3.common.PlaybackException) {
         val current = player.currentVideoCodecs
-        val fallback = playInfo?.let { pickSelection(it, onlyAvc = true) }
-        if (fallback == null) {
+        val cached = playInfo?.let { pickSelection(it, onlyAvc = true) }
+        val fromApp = playInfo?.source == top.bilitv.data.settings.VideoApiSource.APP
+        if (cached == null && !fromApp) {
             error = PlayError(
                 title = "播放失败：${e.errorCodeName}",
                 detail = describeThrows(e) + "\n\n" + player.describeState(),
@@ -2681,12 +2885,10 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
             return
         }
         triedAvcFallback = true
-        AppLog.w(
-            "VM",
-            "视频路走不通（当前 $current）-> 换 AVC 重播：${fallback.video.codecs} " +
-                "${fallback.video.width}x${fallback.video.height}",
-        )
-        showNotice("这个视频的 ${codecFamily(current)} 播不了，已自动切到 AVC")
+        val position = positionMs.coerceAtLeast(0)
+        val wasPlaying = player.exo.playWhenReady
+        AppLog.w("VM", "视频路走不通（当前 $current），换 AVC；缺少 App 兼容流时只请求 Web 一次")
+        showNotice("正在切换兼容编码")
         error = null
         // 先把错误态清干净（此时在主线程，可以直呼）
         player.exo.stop()
@@ -2699,7 +2901,29 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
                 AppLog.w("VM", "换编码期间已经切了视频，放弃这次重播")
                 return@launch
             }
+            var fallback = cached
+            if (fallback == null && fromApp) {
+                val web = if (epId > 0) graph.api.pgcPlayInfo(epId, cid,
+                    source = top.bilitv.data.settings.VideoApiSource.WEB)
+                else graph.api.playInfo(bvid, cid, aid, source = top.bilitv.data.settings.VideoApiSource.WEB)
+                if (myToken != token) return@launch
+                fallback = web?.let { pickSelection(it, onlyAvc = true) }
+                if (fallback != null) {
+                    val bounded = web!!.copy(isPreview = previewActive || web.isPreview,
+                        previewLimitMs = if (previewActive) playInfo?.previewLimitMs else web.previewLimitMs)
+                    top.bilitv.data.model.PlaybackPreview.requireBound(bounded)
+                    playInfo = bounded; previewActive = bounded.isPreview
+                    durationHintMs = top.bilitv.data.model.PlaybackPreview.duration(previewActive, 0, bounded.durationMs, bounded.previewLimitMs)
+                }
+            }
+            if (fallback == null) {
+                error = PlayError("没有可用的兼容视频流", describeThrows(e) + "\n\n" + player.describeState())
+                return@launch
+            }
+            showNotice("这个视频的 ${codecFamily(current)} 播不了，已自动切到 AVC")
             startPlayback(fallback)
+            player.exo.seekTo(position.coerceAtMost(durationHintMs.takeIf { it > 0 } ?: position))
+            if (!wasPlaying) player.exo.pause()
         }
     }
 
@@ -2751,7 +2975,7 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /** 一次性提示，几秒后自己消失 */
-    private fun showNotice(msg: String) {
+    internal fun showNotice(msg: String) {
         notice = msg
         viewModelScope.launch {
             delay(NOTICE_MS)
@@ -2803,6 +3027,7 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
         if (pendingQuality != null) { showNotice("画质正在切换，请稍候"); return }
         if (id == activeQuality || availableQualities.none { it.first == id }) return
         val previousSelection = player.currentSelection() ?: return
+        autoQualityFrom = null
         val previous = adaptiveQuality
         adaptiveQuality = id
         val selection = pickSelection(info, onlyAvc = triedAvcFallback)
@@ -2919,81 +3144,130 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    fun togglePlay() {
-        // 出错状态下这个按钮变成「重试」：整体重走一遍取流流程。
-        // 手机上测的时候不用退出去再进来，一步就能重试。
-        if (error != null) {
-            if (live) {
-                /*
-                 * ★ 直播的"重试"**必须重新问一次取流接口**，不能复用上一次的地址。
-                 *
-                 * 直播播放地址带着时效参数（`expires` + 签名，实测有效期 1 小时），
-                 * 而且房间重开播后**路径本身就会变**（`/live-bvc/<新直播号>/...`）。
-                 * 拿旧地址重试 = 拿一个已经作废的签名去请求，只会又失败一次。
-                 *
-                 * 所以这里重新走 [loadLive] 的取流部分 —— 清掉 loadedKey 是为了
-                 * 绕过它那个"同一个 key 就直接 return"的闸。
-                 */
-                val room = liveRoomId
-                val t = title
-                val o = ownerName
-                val c = cover
-                loadedKey = null
-                loadLive(room, t, c, o)
-                return
-            }
-            val b = bvid
-            val c = cid
-            // PGC 没有 bvid（是空的），所以判断条件是"有 cid 且 (有 bvid 或 是 PGC)"
-            val playable = c != 0L && (b.isNotEmpty() || epId > 0L)
-            if (playable) {
-                loadedKey = null // 清掉，否则 load 会因为"同一个 key"直接 return
-                load(b, c, epId, titleHint)
-            }
+    /** Re-fetch signed URLs while preserving this viewing session's choices, not new defaults. */
+    fun refreshStream() {
+        if (loadJob?.isActive == true) { showNotice("正在加载，请稍候"); return }
+        finishTouchSeek(cancel = true); endTouchBoost()
+        val wasPlaying = player.exo.playWhenReady
+        val position = player.exo.currentPosition.coerceAtLeast(0)
+        persistProgress(force = true)
+        if (live) {
+            val quality = activeLiveLine?.qn ?: requestedLiveQuality
+            loadedKey = null
+            loadLive(liveRoomId, title, cover, ownerName, resumePlaying = wasPlaying, qualityHint = quality)
+        } else if (cid > 0 && (bvid.isNotBlank() || epId > 0)) {
+            load(bvid, cid, epId, title, cover, currentSeasonId, keepSpeed = true,
+                refreshAtMs = position, refreshPaused = !wasPlaying)
+        } else showNotice("视频信息还未加载完成")
+    }
+
+    /** 手动切换和播完连播共用真实列表顺序，绝不以UP推荐冒充播放列表。 */
+    private fun adjacentTarget(step: Int): NextTarget? {
+        if (epId > 0) return cataloguePgc?.let { d -> NextEpisode.nextPgc(d.episodes, epId, step)?.let {
+            NextTarget("", d.playbackTitle(it), it.cid, it.epId, it.cover, d.seasonId)
+        } } ?: nextTarget.takeIf { step == 1 }
+        NextEpisode.nextPage(catalogueDetail?.pages.orEmpty(), cid, step)?.let {
+            return NextTarget(bvid, it.title, it.cid, 0, cover)
+        }
+        if (playlistId > 0) return playlistQueue.takeIf { it.folderId == playlistId }?.adjacent(bvid, step)?.sideTarget()
+        return NextEpisode.adjacent(catalogueDetail?.collection.orEmpty(), step) { it.bvid == bvid }?.let {
+            NextTarget(it.bvid, it.title, it.cid, 0, it.cover)
+        }
+    }
+
+    private fun playAdjacentTarget(target: NextTarget, manual: Boolean) {
+        adjacentJob = null
+        persistProgress(force = true); closeSidebar()
+        if (!manual) showNotice("即将播放：${target.title}")
+        load(target.bvid, target.cid, target.epId, target.title, target.cover,
+            target.seasonId.takeIf { it > 0 } ?: currentSeasonId, keepSpeed = true)
+    }
+
+    fun playAdjacent(step: Int, manual: Boolean = true) {
+        adjacentJob?.cancel(); adjacentJob = null
+        if (step != -1 && step != 1) return
+        if (live) { if (manual) showNotice("直播没有上一集或下一集"); return }
+        adjacentTarget(step)?.let { playAdjacentTarget(it, manual); return }
+        val knownPlaylist = playlistId > 0 && playlistQueue.folderId == playlistId && playlistQueue.contains(bvid)
+        if (step != 1 || !knownPlaylist || !playlistQueue.hasMore) {
+            if (manual) showNotice(when {
+                playlistId > 0 && !knownPlaylist -> "请先打开播放列表加载当前视频所在的页面"
+                step < 0 && knownPlaylist && playlistQueue.truncated -> "前面的视频已不在缓存中，请打开播放列表选择"
+                step < 0 -> "没有上一个视频"
+                else -> "没有下一个视频"
+            })
             return
         }
+        closeSidebar()
+        val requestedFolder = playlistId; val requestedBvid = bvid
+        val myToken = token; val generation = sideGeneration
+        if (manual) showNotice("正在加载播放列表下一页…")
+        adjacentJob = viewModelScope.launch {
+            try {
+                val item = playlistQueue.next(requestedBvid) { page ->
+                    val result = graph.api.favResourcePage(requestedFolder, page) ?: error("播放列表下一页加载失败，可重试")
+                    if (myToken != token || generation != sideGeneration || requestedFolder != playlistId ||
+                        (!manual && !graph.settings.autoNext)) throw CancellationException()
+                    result
+                }
+                if (myToken != token || generation != sideGeneration) return@launch
+                if (item != null) playAdjacentTarget(item.sideTarget(), manual)
+                else if (playlistQueue.hasMore) showNotice("后续页暂无可播放视频，可再按下一项或打开播放列表")
+                else if (manual) showNotice("没有下一个视频")
+            } catch (e: CancellationException) { throw e }
+            catch (e: Exception) { if (myToken == token && generation == sideGeneration) showNotice(e.message ?: "播放列表加载失败，可重试") }
+            finally { if (myToken == token && generation == sideGeneration) adjacentJob = null }
+        }
+    }
+
+    fun togglePlay() {
+        adjacentJob?.cancel(); adjacentJob = null
+        if (resumeChoiceMs != null) return
+        if (previewEnded) { replayPreview(); return }
+        // 出错状态下这个按钮变成「重试」：整体重走一遍取流流程。
+        // 手机上测的时候不用退出去再进来，一步就能重试。
+        if (error != null) { refreshStream(); return }
         val exo = player.exo
         exo.playWhenReady = !exo.playWhenReady
         AppLog.i("Player", "切换播放状态：playWhenReady=${exo.playWhenReady}")
     }
 
-    fun seekBy(deltaMs: Long) {
-        val exo = player.exo
-        val current = exo.currentPosition
-        val total = durationMs
-
-        /*
-         * ★ 两个前置判断，缺一个都会出真事故。
-         *
-         * 2026-09-29 模拟器上按住 +10s 连跳，跳到最后进度条变成 `--:--`、
-         * 画面回到开头 —— 查下来是这里：
-         *
-         * 播放器在过渡态（刚 seek 完还在重缓冲 / 时间线未就绪）时，
-         * `currentPosition` 返回的是 `C.TIME_UNSET`，一个**极小的负数**。
-         * 拿它加 10000 仍然是极小负数，再 `coerceIn(0, duration)` 就被夹成了 **0** ——
-         * 于是"快进 10 秒"变成了"跳回开头"，而 `samplePosition(0)` 又让进度条
-         * 显示成 `--:--`（`formatDuration` 对 <=0 的输入就是这个）。
-         *
-         * 所以：时长未知、或者当前坐标不可信的时候，**直接不跳**。
-         * 宁可这一次按键没反应，也不能把用户送到错误的位置。
-         */
-        if (total <= 0L || current < 0L) return
-
-        /*
-         * 上一次跳转还没缓过来 → 这一次不跳。
-         *
-         * 长按连跳是每秒好几次 `seekTo`，每一次都会**打断上一轮还没读完的网络请求**。
-         * 2026-09-29 在模拟器上实测：按住 2.5 秒会打出一串
-         * `HttpDataSourceException: InterruptedIOException`，重试链一路跌到第 3 个备用地址，
-         * 松开之后播放器要停顿十几秒才恢复（期间进度显示 `--:--`）。
-         *
-         * 这条规则让连跳速度**自动贴合当前网络**：网好就跳得动，网差就跳不动 ——
-         * 但不会把播放器拖死。这比写死一个"每秒最多跳几次"更靠谱，
-         * 因为我们没法在客户端知道对面 CDN 现在有多快。
-         */
-        if (exo.playbackState == Player.STATE_BUFFERING) return
-
-        seekTo((current + deltaMs).coerceIn(0L, total))
+    private var touchOrigin: Long? = null
+    private var touchTarget = 0L
+    private var touchWasPlaying = false
+    private var previewAt = 0L
+    private var touchPreviewCount = 0
+    private var boostSpeed by mutableStateOf<Float?>(null)
+    fun beginTouchSeek() {
+        if (live || touchOrigin != null || durationMs <= 0) return
+        touchOrigin = player.exo.currentPosition.coerceAtLeast(0)
+        touchTarget = touchOrigin!!; touchWasPlaying = player.exo.playWhenReady
+        player.exo.pause(); previewAt = 0; touchPreviewCount = 0
+    }
+    fun previewTouchSeek(target: Long) {
+        if (touchOrigin == null) return
+        touchTarget = target.coerceIn(0, durationMs.coerceAtLeast(0))
+        val now = SystemClock.elapsedRealtime()
+        // ponytail: reuse the decoder, max two previews/sec; no extra thumbnail player or requests.
+        if (now - previewAt >= 500 && !buffering && touchTarget <= player.exo.bufferedPosition && touchTarget >= touchOrigin!!) {
+            player.exo.seekTo(touchTarget); previewAt = now; touchPreviewCount++
+        }
+    }
+    fun finishTouchSeek(cancel: Boolean = false) {
+        val origin = touchOrigin ?: return
+        touchOrigin = null
+        seekTo(if (cancel) origin else touchTarget)
+        player.exo.playWhenReady = touchWasPlaying
+        AppLog.i("Player", "触摸进度：目标=$touchTarget 预览=$touchPreviewCount 取消=$cancel")
+    }
+    fun beginTouchBoost(): Boolean {
+        if (live || !player.exo.playWhenReady || boostSpeed != null || touchOrigin != null) return false
+        boostSpeed = player.exo.playbackParameters.speed
+        player.setSpeed(2f); AppLog.i("Player", "触摸临时倍速=2.0 原速=$boostSpeed"); return true
+    }
+    fun endTouchBoost() {
+        val previous = boostSpeed ?: return
+        boostSpeed = null; player.setSpeed(previous); AppLog.i("Player", "触摸倍速恢复=$previous")
     }
 
     fun seekTo(targetMs: Long) {
@@ -3090,6 +3364,7 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
      */
     fun cycleSpeed() {
         speedIndex = PlaybackTuning.nextSpeedIndex(speedIndex)
+        if (!live) graph.settings.rememberSpeedForUp(ownerMid, speedIndex)
         val v = PlaybackTuning.speedOf(speedIndex)
         player.setSpeed(v)
         showNotice("倍速 ${PlaybackTuning.formatSpeed(v)}")
@@ -3103,6 +3378,8 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
      * （老 4:3 片源才想拉伸，不看老片的人不希望被记住）。
      * 设置页里的 `aspectMode` 管的是默认值。
      */
+    fun setAspect(id: String) { aspectId = PlaybackTuning.aspectOf(id).id }
+
     fun cycleAspect() {
         aspectId = PlaybackTuning.nextAspectId(aspectId)
         val label = PlaybackTuning.aspectOf(aspectId).label
@@ -3121,26 +3398,23 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
      *
      * 1. **设置开着**（`autoNext`）—— 用户可以在设置页关掉
      * 2. **不是直播** —— 直播没有"播完"这回事，但防御性挡一下
-     * 3. **有下一集**（`nextTarget != null`）—— 最后一集必须停在原地
+     * 3. 按已知分P/分集/合集/收藏顺序解析目标；最终末尾停留，未知身份不猜首项
      */
-    fun continueToNext() {
-        if (!graph.settings.autoNext) return
-        if (live) return
-        val t = nextTarget
-        if (t == null) {
-            AppLog.i("VM", "已播完，没有下一集（自动连播到此为止）")
+    fun continueToNext(manual: Boolean = false) {
+        if (!manual && previewActive) {
+            finishTouchSeek(cancel = true); endTouchBoost(); player.exo.pause()
+            closeSidebar(); previewEnded = true
+            AppLog.i("VM", "接口试看片段结束；不自动循环或连播")
             return
         }
-        AppLog.i("VM", "自动连播 -> ${t.title}（bvid=${t.bvid} cid=${t.cid} epId=${t.epId}）")
-        showNotice("即将播放：${t.title}")
-        /*
-         * 复用 `load()`。先把 `loadedKey` 置空 —— 虽然新一集的 key（bvid+cid+epId）
-         * 本来就不同、不清也能进，但这里**显式清掉**是防止一类边界：
-         * 万一某两集 cid/epId 全同（数据异常），不清就会"点了没反应"。
-         * `load()` 内部会把 `triedXxx` 一系列 flag 重置，这是它该干的事。
-         */
-        loadedKey = null
-        load(t.bvid, t.cid, t.epId, t.title, t.cover, seasonId, keepSpeed = true)
+        if (!manual && !graph.settings.autoNext) return
+        playAdjacent(1, manual)
+    }
+
+    fun replayPreview() {
+        if (!previewActive || !previewEnded) return
+        previewEnded = false
+        player.exo.seekTo(0); samplePosition(0); player.exo.play()
     }
 
     /**
@@ -3159,9 +3433,10 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
                 delay(TICK_MS)
                 if (myToken != token) return@launch
 
+                if (resumeChoiceMs != null) continue
                 val exo = player.exo
                 samplePosition(exo.currentPosition)
-                durationMs = exo.duration.takeIf { it > 0L } ?: durationHintMs
+                durationMs = top.bilitv.data.model.PlaybackPreview.duration(previewActive, exo.duration, durationHintMs, playInfo?.previewLimitMs)
                 if (!live && subtitlesEnabled) subtitleText = subtitleTimeline?.textAt(positionMs).orEmpty()
 
                 tickSponsor()
@@ -3191,7 +3466,6 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
      * `currentPosition` 返回的是 `C.TIME_UNSET` —— 一个极小的负数。
      * 让它进来会一次连坏三件事：进度条显示 `--:--`、弹幕引擎判定"进度突变"整屏清空重排、
      * 广告调度器按一个错误的位置去判断该不该跳过。
-     * 详见 [seekBy] 里那段说明。
      */
     private fun samplePosition(ms: Long) {
         if (ms < 0L) return
@@ -3208,10 +3482,7 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
     fun danmakuPosition(): Long = posClock.read(playing)
 
     private fun tickSponsor() {
-        // 直播不查广告：SponsorBlock 是按**视频号**标注的，直播没有 bvid。
-        // 而且直播没有固定时长，"第几秒是广告"这件事本身就不成立。
-        if (live) return
-        if (!graph.settings.sponsorEnabled) return
+        if (live || !playing || buffering || previewEnded || resumeChoiceMs != null) return
         when (val decision = planner.onPosition(positionMs, durationMs, SystemClock.elapsedRealtime())) {
             is SkipPlanner.Decision.Armed ->
                 skipHint = "${decision.segment.category.label} · 即将跳过"
@@ -3260,23 +3531,45 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
 
     private val danmakuMergeMutex = Mutex()
 
+    private fun refreshSkipSegments(force: Boolean = false) {
+        val settings = graph.settings
+        val policy = Triple(settings.skipOfficialIntroOutro, settings.sponsorEnabled, settings.sponsorCategories)
+        if (!force && policy == skipPolicy) return
+        skipPolicy = policy
+        if (!policy.second) {
+            sponsorJob?.cancel(); sponsorJob = null; sponsorRequested = false
+        }
+        val clips = if (policy.first && !live && epId > 0) playInfo?.officialClips.orEmpty() else emptyList()
+        val official = clips.filter { it.endMs <= durationHintMs }.map { clip ->
+            top.bilitv.data.sponsor.SponsorSegment(clip.startMs, clip.endMs,
+                if (clip.intro) top.bilitv.data.sponsor.SponsorCategory.INTRO else top.bilitv.data.sponsor.SponsorCategory.OUTRO,
+                "skip", "official:${clip.intro}:${clip.startMs}-${clip.endMs}", cid)
+        }
+        val community = if (policy.second) communitySkipSegments.filter { it.category in policy.third } else emptyList()
+        val segments = official + community
+        planner.setSegments(segments, segments.map { it.category }.toSet())
+        skipHint = null
+        if (renderedFirstFrame) loadSponsor()
+    }
+
     private fun loadSponsor() {
-        // PGC 没有 bvid。拿空串去查 SponsorBlock 是纯粹的无效请求，
-        // 而且会把"空 videoID"这个无意义的东西发给第三方服务。
-        if (bvid.isBlank()) return
-        if (sponsorRequested) return
+        // Official PGC markers already come with the play response; only UGC queries the community service.
+        if (live || epId > 0 || bvid.isBlank() || sponsorRequested || cid == 0L || !graph.settings.sponsorEnabled) return
         sponsorRequested = true
-        if (!graph.settings.sponsorEnabled || cid == 0L) return
 
         val myToken = token
-        viewModelScope.launch {
+        sponsorJob = viewModelScope.launch {
             val segments = graph.sponsor.fetchSegments(bvid, cid)
+            coroutineContext.ensureActive()
             if (myToken != token) return@launch
-            planner.setSegments(segments, graph.settings.sponsorCategories)
+            communitySkipSegments = segments
+            refreshSkipSegments(force = true)
         }
     }
 
     override fun onCleared() {
+        stopSkipSettingsObserver()
+        sponsorJob?.cancel()
         loadJob?.cancel()
         subtitleMetadataJob?.cancel(); subtitleJob?.cancel()
         ticker?.cancel()

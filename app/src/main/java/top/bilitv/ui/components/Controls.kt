@@ -5,6 +5,8 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.ui.res.stringResource
+import top.bilitv.R
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
@@ -25,10 +27,10 @@ fun BackChip(onBack: () -> Unit, modifier: Modifier = Modifier) {
         onClick = onBack,
         modifier = modifier,
         background = theme.surfaceHigh,
-        contentDescription = "返回",
+        contentDescription = stringResource(R.string.action_back),
     ) {
         Text(
-            text = "←  返回",
+            text = stringResource(R.string.action_back_arrow),
             style = TextStyle(fontSize = AppType.Body2, fontWeight = FontWeight.Medium),
             color = theme.textPrimary,
             modifier = Modifier.padding(horizontal = 22.dp, vertical = 11.dp),

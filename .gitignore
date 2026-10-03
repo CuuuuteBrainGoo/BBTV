@@ -61,6 +61,7 @@ tools/output/
 
 # 私人过程与本地 AI 交接记录；正式项目说明为 docs/PROJECT.md
 /docs/[0-9][0-9]-*.md
+/docs/[0-9][0-9][0-9]*-*.md
 /docs/audit/
 /TASK_STATE.md
 /handoff/

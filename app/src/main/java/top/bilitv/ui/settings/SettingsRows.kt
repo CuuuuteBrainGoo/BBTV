@@ -1,10 +1,10 @@
 package top.bilitv.ui.settings
 
+import top.bilitv.ui.components.scrollWithScrollbar
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Text
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
@@ -19,6 +19,9 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.res.stringResource
+import top.bilitv.R
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
@@ -41,26 +44,40 @@ internal fun SettingRow(
     val theme = AppTheme.current
     var focused by remember { mutableStateOf(false) }
     val textColor = if (focused) theme.onPrimary else theme.textPrimary
-    Row(
-        modifier.fillMaxWidth().onFocusChanged { focused = it.isFocused }
+    val fontScale = LocalDensity.current.fontScale.coerceAtLeast(1f)
+    BoxWithConstraints(
+        modifier.fillMaxWidth().heightIn(min = 48.dp).onFocusChanged { focused = it.isFocused }
             .focusRing(
                 contentDescription = "$title，$value",
                 focusedFill = theme.primary,
                 scaleOnFocus = 1f,
                 onClick = onClick,
             ).padding(horizontal = 14.dp, vertical = 12.dp),
-        verticalAlignment = Alignment.CenterVertically,
     ) {
-        Column(Modifier.weight(1f)) {
+        val caption: @Composable () -> Unit = {
             Text(title, color = textColor, style = TextStyle(fontSize = AppType.Body2))
             if (desc != null) Text(desc,
                 color = if (focused) theme.onPrimary else theme.textSecondary,
                 style = TextStyle(fontSize = AppType.Small),
                 modifier = Modifier.padding(top = 3.dp))
         }
-        if (trailing != null) trailing()
-        else Text(value, color = if (focused) theme.onPrimary else theme.primary,
-            style = TextStyle(fontSize = AppType.Meta), modifier = Modifier.padding(start = 20.dp))
+        val selection: @Composable () -> Unit = {
+            if (trailing != null) trailing()
+            else Text(value, color = if (focused) theme.onPrimary else theme.primary,
+                style = TextStyle(fontSize = AppType.Meta))
+        }
+        if (trailing == null && value.isEmpty()) {
+            Column { caption() }
+        } else if (maxWidth < 320.dp * fontScale) {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                caption()
+                selection()
+            }
+        } else Row(verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+            Column(Modifier.weight(.65f)) { caption() }
+            Box(Modifier.weight(.35f), contentAlignment = Alignment.CenterEnd) { selection() }
+        }
     }
 }
 
@@ -73,8 +90,9 @@ internal fun ToggleRow(
     modifier: Modifier = Modifier,
 ) {
     val theme = AppTheme.current
-    SettingRow(title, desc, if (on) "开" else "关", modifier.semantics {
-        role = Role.Switch; stateDescription = if (on) "开" else "关"
+    val value = stringResource(if (on) R.string.value_on else R.string.value_off)
+    SettingRow(title, desc, value, modifier.semantics {
+        role = Role.Switch; stateDescription = value
     }, trailing = {
         Switch(checked = on, onCheckedChange = null, colors = SwitchDefaults.colors(
             checkedTrackColor = theme.primary, checkedThumbColor = theme.onPrimary,
@@ -99,12 +117,12 @@ internal fun StepperRow(
         Text(title, color = theme.textPrimary, style = TextStyle(fontSize = AppType.Body2),
             modifier = Modifier.weight(1f))
         TvCard(onClick = onMinus, modifier = modifier.focusRequester(minusFocus),
-            focusedScale = 1f, contentDescription = "$title 减小") {
+            focusedScale = 1f, contentDescription = stringResource(R.string.setting_decrease, title)) {
             Text("−", color = theme.textPrimary, modifier = Modifier.padding(horizontal = 20.dp, vertical = 10.dp))
         }
         Text(value, color = theme.primary, modifier = Modifier.padding(horizontal = 20.dp))
         TvCard(onClick = onPlus, modifier = Modifier.focusProperties { left = minusFocus },
-            focusedScale = 1f, contentDescription = "$title 增大") {
+            focusedScale = 1f, contentDescription = stringResource(R.string.setting_increase, title)) {
             Text("+", color = theme.textPrimary, modifier = Modifier.padding(horizontal = 20.dp, vertical = 10.dp))
         }
     }
@@ -121,14 +139,25 @@ internal fun ActionRow(
     modifier: Modifier = Modifier,
 ) {
     val theme = AppTheme.current
-    Row(modifier.fillMaxWidth().padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
-        Column(Modifier.weight(1f)) {
+    val fontScale = LocalDensity.current.fontScale.coerceAtLeast(1f)
+    BoxWithConstraints(modifier.fillMaxWidth().padding(14.dp)) {
+        val caption: @Composable () -> Unit = {
             Text(title, color = theme.textPrimary, style = TextStyle(fontSize = AppType.Body2))
             if (desc != null) Text(desc, color = theme.textSecondary, style = TextStyle(fontSize = AppType.Small))
         }
-        Text(value, color = theme.primary, modifier = Modifier.padding(end = 12.dp))
-        TvCard(onClick = onAction, focusedScale = 1f, contentDescription = "$actionLabel$title") {
-            Text(actionLabel, color = theme.primary, modifier = Modifier.padding(horizontal = 20.dp, vertical = 10.dp))
+        val action: @Composable () -> Unit = {
+            if (value.isNotBlank()) Text(value, color = theme.primary)
+            TvCard(onClick = onAction, modifier = Modifier.heightIn(min = 48.dp),
+                focusedScale = 1f, contentDescription = "$actionLabel$title") {
+                Text(actionLabel, color = theme.primary, modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp))
+            }
+        }
+        if (maxWidth < 320.dp * fontScale) {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) { caption(); action() }
+        } else Row(verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+            Column(Modifier.weight(.65f)) { caption() }
+            Column(Modifier.weight(.35f), horizontalAlignment = Alignment.End) { action() }
         }
     }
 }
@@ -152,11 +181,11 @@ internal fun <T> ChoiceRow(
         Dialog(onDismissRequest = { open = false }) {
             Column(Modifier.fillMaxWidth().heightIn(max = 400.dp)
                 .background(theme.surface, RoundedCornerShape(12.dp))
-                .verticalScroll(rememberScrollState()).padding(16.dp)) {
+                .scrollWithScrollbar(rememberScrollState()).padding(16.dp)) {
                 Text(title, color = theme.textPrimary, style = TextStyle(fontSize = AppType.H3),
                     modifier = Modifier.padding(bottom = 10.dp))
                 (if (selected in options) options else options + selected).forEach { option ->
-                    SettingRow(labelOf(option), null, if (option == selected) "当前" else "",
+                    SettingRow(labelOf(option), null, if (option == selected) stringResource(R.string.value_current) else "",
                         modifier = if (option == selected) Modifier.focusRequester(selectedFocus) else Modifier,
                     ) { onSelect(option); open = false }
                 }

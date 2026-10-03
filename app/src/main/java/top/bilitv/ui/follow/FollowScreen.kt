@@ -1,5 +1,6 @@
 package top.bilitv.ui.follow
 
+import top.bilitv.ui.components.verticalScrollbar
 import android.app.Application
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -14,7 +15,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items as gridItems
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
@@ -22,12 +23,16 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Text
+import androidx.compose.ui.res.stringResource
+import top.bilitv.R
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -48,15 +53,23 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.ensureActive
 import top.bilitv.BiliTvApp
 import top.bilitv.data.model.UpUser
 import top.bilitv.ui.components.FilledActionButton
+import top.bilitv.ui.components.LoadFeedback
+import top.bilitv.ui.components.BackChip
+import top.bilitv.ui.components.scrollWithScrollbar
 import top.bilitv.ui.components.RequestFocusOnAppear
 import top.bilitv.ui.components.fixedScheme
 import top.bilitv.ui.components.formatCount
 import top.bilitv.ui.components.focusRing
 import top.bilitv.ui.theme.AppTheme
 import top.bilitv.ui.theme.AppType
+import top.bilitv.ui.theme.CardGridCells
+import top.bilitv.ui.theme.nearEnd
 import top.bilitv.util.AppLog
 
 /**
@@ -111,21 +124,29 @@ fun FollowScreen(
     onGoHome: () -> Unit,
 ) {
     val vm: FollowViewModel = viewModel()
+    val gridState = rememberLazyGridState()
     val theme = AppTheme.current
     LaunchedEffect(Unit) { vm.load() }
+    DisposableEffect(vm) { onDispose { vm.stopLoading() } }
+    LaunchedEffect(vm, gridState) {
+        snapshotFlow { gridState.layoutInfo.nearEnd(vm.items.size) to vm.items.size }.collect { (near, size) ->
+            if (near && size > 0 && vm.loadError == null) vm.more()
+        }
+    }
 
     val firstTile = remember { FocusRequester() }
     val emptyButton = remember { FocusRequester() }
     val list = vm.items
 
     Column(modifier = Modifier.fillMaxSize()) {
-        FollowHeader(count = list.size, showCount = vm.loggedIn && list.isNotEmpty())
+        BackChip(onBack = onGoHome, modifier = Modifier.padding(horizontal = theme.screenPadding, vertical = 8.dp))
+        FollowHeader(count = list.size, total = vm.total, showCount = vm.loggedIn && list.isNotEmpty())
 
         Box(modifier = Modifier.fillMaxSize()) {
             when {
-                vm.loading -> CircularProgressIndicator(Modifier.align(Alignment.Center))
+                vm.loading && list.isEmpty() -> CircularProgressIndicator(Modifier.align(Alignment.Center))
 
-                list.isEmpty() -> FollowNotice(
+                list.isEmpty() && !vm.canLoadMore -> FollowNotice(
                     state = vm.state,
                     onAction = when (vm.state) {
                         FollowState.NEED_LOGIN -> onNeedLogin
@@ -133,16 +154,16 @@ fun FollowScreen(
                         else -> onGoHome
                     },
                     actionLabel = when (vm.state) {
-                        FollowState.NEED_LOGIN -> "去登录"
-                        FollowState.ERROR -> "重新加载"
-                        else -> "去首页看看"
+                        FollowState.NEED_LOGIN -> stringResource(R.string.action_sign_in)
+                        FollowState.ERROR -> stringResource(R.string.action_reload)
+                        else -> stringResource(R.string.action_browse_home)
                     },
                     requester = emptyButton,
                 )
 
                 else -> LazyVerticalGrid(
-                    columns = GridCells.Fixed(theme.cardColumns + 1),
-                    state = rememberLazyGridState(),
+                    columns = CardGridCells(160.dp),
+                    state = gridState,
                     contentPadding = PaddingValues(
                         start = theme.screenPadding,
                         end = theme.screenPadding,
@@ -150,7 +171,7 @@ fun FollowScreen(
                     ),
                     horizontalArrangement = Arrangement.spacedBy(theme.cardGap),
                     verticalArrangement = Arrangement.spacedBy(theme.rowGap),
-                    modifier = Modifier.fillMaxSize(),
+                    modifier = Modifier.fillMaxSize().verticalScrollbar(gridState),
                 ) {
                     gridItems(list, key = { it.mid }) { up ->
                         UpTile(
@@ -159,6 +180,15 @@ fun FollowScreen(
                             modifier = Modifier.fillMaxWidth(),
                             focusRequester = firstTile.takeIf { up.mid == list.first().mid },
                         )
+                    }
+                    item(span = { GridItemSpan(maxLineSpan) }) {
+                        LoadFeedback(vm.loading || vm.moreLoading, vm.loadError, vm::retry,
+                            if (list.isEmpty() && vm.loadError != null) Modifier.focusRequester(emptyButton) else Modifier)
+                    }
+                    if (vm.canLoadMore) item(span = { GridItemSpan(maxLineSpan) }) {
+                        FilledActionButton(if (vm.moreLoading) stringResource(R.string.loading) else stringResource(R.string.follow_continue), vm::more,
+                            modifier = Modifier.fillMaxWidth().then(
+                                if (list.isEmpty() && vm.loadError == null) Modifier.focusRequester(emptyButton) else Modifier))
                     }
                 }
             }
@@ -170,7 +200,7 @@ fun FollowScreen(
 }
 
 @Composable
-private fun FollowHeader(count: Int, showCount: Boolean) {
+private fun FollowHeader(count: Int, total: Long?, showCount: Boolean) {
     val theme = AppTheme.current
     Column(
         modifier = Modifier
@@ -183,12 +213,14 @@ private fun FollowHeader(count: Int, showCount: Boolean) {
             ),
     ) {
         Text(
-            text = "关注",
+            text = stringResource(R.string.account_following),
             style = TextStyle(fontSize = AppType.H1, fontWeight = FontWeight.SemiBold),
             color = theme.textPrimary,
         )
         Text(
-            text = if (showCount) "共 $count 个 UP 主 · 选中一个看他的投稿" else "选中一个 UP 主看他的投稿",
+            text = if (!showCount) stringResource(R.string.follow_header_hint)
+                else if (total != null) stringResource(R.string.follow_count_total, count, total)
+                else stringResource(R.string.follow_count, count),
             style = TextStyle(fontSize = AppType.Caption),
             color = theme.textTertiary,
             modifier = Modifier.padding(top = 4.dp),
@@ -217,8 +249,8 @@ private fun UpTile(
 
     val desc = buildString {
         append(up.name)
-        if (up.liveRoomId > 0) append("，正在直播")
-        if (up.fans > 0) append("，${formatCount(up.fans)}粉丝")
+        if (up.liveRoomId > 0) append(context.getString(R.string.live_living_description))
+        if (up.fans > 0) append(context.getString(R.string.follow_fans_description, formatCount(up.fans)))
         if (up.sign.isNotBlank()) append("，${up.sign}")
     }
 
@@ -257,7 +289,7 @@ private fun UpTile(
              */
             if (up.liveRoomId > 0) {
                 Text(
-                    text = "直播中",
+                    text = stringResource(R.string.live_living),
                     style = TextStyle(fontSize = AppType.Tiny, fontWeight = FontWeight.Medium),
                     color = Color.White,
                     modifier = Modifier
@@ -288,7 +320,7 @@ private fun UpTile(
          */
         val sub = when {
             up.officialDesc.isNotBlank() -> up.officialDesc
-            up.fans > 0 -> "${formatCount(up.fans)}粉丝"
+            up.fans > 0 -> stringResource(R.string.follow_fans, formatCount(up.fans))
             else -> ""
         }
         if (sub.isNotBlank()) {
@@ -323,19 +355,20 @@ private fun FollowNotice(
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .padding(horizontal = 140.dp),
+            .scrollWithScrollbar(androidx.compose.foundation.rememberScrollState())
+            .padding(horizontal = 24.dp, vertical = 20.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center,
     ) {
         Text(
             text = when (state) {
-                FollowState.NEED_LOGIN -> "关注列表需要登录"
-                FollowState.EMPTY -> "还没有关注任何人"
-                FollowState.ERROR -> "拿不到关注列表"
+                FollowState.NEED_LOGIN -> stringResource(R.string.follow_need_login)
+                FollowState.EMPTY -> stringResource(R.string.follow_empty)
+                FollowState.ERROR -> stringResource(R.string.follow_unavailable)
                 // 下面两个**不该走到这里** —— 调用方只在"列表空且不在加载中"时才渲染这一屏。
                 // 写出来是因为 `when` 当表达式用必须穷尽；留一句话而不是留空白，
                 // 万一日后哪里改错了，屏幕上至少有一行字能指认现场。
-                FollowState.LOADING, FollowState.READY -> "状态异常，回到侧栏再进一次这一页"
+                FollowState.LOADING, FollowState.READY -> stringResource(R.string.dynamic_reopen)
             },
             style = TextStyle(fontSize = AppType.H2, fontWeight = FontWeight.SemiBold),
             color = theme.textPrimary,
@@ -343,13 +376,13 @@ private fun FollowNotice(
         Text(
             text = when (state) {
                 FollowState.NEED_LOGIN ->
-                    "关注的人存在你的账号里，不登录读不到。扫码登录一次就行，之后不用再登。"
+                    stringResource(R.string.follow_need_login_hint)
                 FollowState.EMPTY ->
-                    "在手机或网页上关注几个 UP 主，这里就会出现。"
+                    stringResource(R.string.follow_empty_hint)
                 FollowState.ERROR ->
-                    "接口可能变了或网络不通。已经登录了还是这样，就是服务端的问题，看日志能有线索。"
+                    stringResource(R.string.follow_error_hint)
                 FollowState.LOADING, FollowState.READY ->
-                    "这一屏本来不该出现，麻烦把日志发我。"
+                    stringResource(R.string.dynamic_reopen_hint)
             },
             style = TextStyle(fontSize = AppType.Body3, lineHeight = 22.sp),
             color = theme.textSecondary,
@@ -378,17 +411,13 @@ private val AVATAR_SIZE = 104.dp
 /** 直播中角标用的红。B 站直播的红是 `#FA5A57` 那一档 */
 private val LIVE_RED = Color(0xFFE0534F)
 
-/** 关注页的四种状态。它决定"空的时候该说什么话、给什么按钮"。 */
+/** 只把成功响应的零关注显示为空；失败保持可重试。 */
 enum class FollowState { LOADING, NEED_LOGIN, EMPTY, ERROR, READY }
 
 /**
  * 关注页数据。
  *
- * ## 判据只有一条，但必须记三件事
- *
- * 服务端在"没登录"和"接口挂了"两种情况下都只会给空列表，
- * 所以**状态的判据是「列表空 + `isLoggedIn()`」这一对**，不能只看列表空不空。
- * 这和 PGC 详情页（`docs/15` §2.1）是同一类问题，只是那边的空值来自 `data=null`。
+ * total 和 list 来自同一次成功响应。按账号缓存已加载页，失败不推进页码，离页取消读取。
  */
 class FollowViewModel(app: Application) : AndroidViewModel(app) {
 
@@ -403,76 +432,77 @@ class FollowViewModel(app: Application) : AndroidViewModel(app) {
     var state by mutableStateOf(FollowState.LOADING)
         private set
 
-    private var inFlight = false
+    var total by mutableStateOf<Long?>(null); private set
+    var canLoadMore by mutableStateOf(false); private set
+    var moreLoading by mutableStateOf(false); private set
+    var loadError by mutableStateOf<String?>(null); private set
+    private var requestJob: Job? = null
+    private var generation = 0
+    private var page = 0
+    private var loadedMid: Long? = null
+    private var failedMore = false
 
-    /**
-     * 进页面时调用。
-     *
-     * ## 为什么要带一个"已经取到过就别重取"的闸
-     *
-     * 侧栏切走再切回来，[FollowScreen] 会重新进入组合，`LaunchedEffect(Unit)` 就再跑一次。
-     * 每次都真发请求的话，用户来回点几下侧栏就是好几个网络往返 + 好几次列表闪动。
-     * 但**不能无条件跳过**：登录态可能刚变过（在设置页退出登录了、
-     * 或者刚扫码登录成功），那种情况下必须重取，否则会一直显示上一次的结论。
-     *
-     * 所以闸门开在「上次成功了 **且** 登录态没变过」这两个条件上。
-     */
+    fun stopLoading() {
+        ++generation; requestJob?.cancel(); requestJob = null
+        loading = false; moreLoading = false
+    }
+
+    /** Successful empty pages and the current account are cached, interrupted first pages resume. */
     fun load() {
-        if (state == FollowState.READY && loggedIn == graph.api.isLoggedIn()) return
-        fetch()
+        val login = graph.api.isLoggedIn()
+        val mid = graph.api.myMid()
+        if (login == loggedIn && mid == loadedMid && (page > 0 || requestJob?.isActive == true)) return
+        reload()
     }
 
-    /** 「重试」/ 「重新加载」用。**必须绕开上面的闸**，否则按了没反应。 */
     fun reload() {
-        inFlight = false
-        fetch()
+        stopLoading()
+        val mid = graph.api.myMid()
+        val login = graph.api.isLoggedIn()
+        if (mid != loadedMid || login != loggedIn) {
+            items = emptyList(); page = 0; total = null; canLoadMore = false
+        }
+        loadedMid = mid; loggedIn = login
+        loadError = null; failedMore = false
+        if (!login) { state = FollowState.NEED_LOGIN; return }
+        request(1)
     }
 
-    private fun fetch() {
-        if (inFlight) return
-        inFlight = true
-        loading = true
-        viewModelScope.launch {
-            val isLoggedIn = graph.api.isLoggedIn()
-            loggedIn = isLoggedIn
-            if (!isLoggedIn) {
-                // 没登录就**不要发请求** —— 发了也是 -101，
-                // 白等一个网络往返，而且日志里会多一条毫无信息量的错误
-                items = emptyList()
-                state = FollowState.NEED_LOGIN
-                loading = false
-                inFlight = false
-                return@launch
-            }
+    fun retry() { if (failedMore) more() else reload() }
 
-            val result = graph.api.followingList(vmid = graph.api.myMid())
-            items = result
-            /*
-             * ★ 列表空的时候，**不能直接说"接口坏了"，也不能直接说"你没关注谁"**。
-             *
-             * 这两件事在列表上长得一模一样（都是空），但用户能做的事完全不同。
-             * 所以空的时候去问一次 `/x/relation/stat`（游客态可用的公开计数），
-             * 拿"关注数"当第二条证据：
-             *
-             * | 列表 | 关注数 | 结论 |
-             * |---|---|---|
-             * | 空 | 0 | 确实没关注任何人 → EMPTY |
-             * | 空 | >0 | 接口那边出问题了 → ERROR |
-             * | 空 | 取不到(null) | 证据不足，**按 ERROR 处理**（宁可让他重试，也别骗他说"你没关注"） |
-             */
-            state = when {
-                result.isNotEmpty() -> FollowState.READY
-                else -> {
-                    val count = graph.api.followingCount(graph.api.myMid())
-                    if (count == 0L) FollowState.EMPTY else FollowState.ERROR
+    fun more() {
+        if (requestJob?.isActive == true || !canLoadMore) return
+        if (!graph.api.isLoggedIn() || graph.api.myMid() != loadedMid) { reload(); return }
+        request(page + 1)
+    }
+
+    private fun request(nextPage: Int) {
+        val g = ++generation
+        val mid = loadedMid ?: return
+        loading = nextPage == 1; moreLoading = nextPage > 1; loadError = null
+        if (loading && items.isEmpty()) state = FollowState.LOADING
+        requestJob = viewModelScope.launch {
+            try {
+                val result = graph.api.followingPage(vmid = mid, pn = nextPage)
+                coroutineContext.ensureActive()
+                if (g != generation || loadedMid != mid) return@launch
+                if (!graph.api.isLoggedIn() || graph.api.myMid() != mid) { reload(); return@launch }
+                items = (if (nextPage == 1) result.items else items + result.items).distinctBy { it.mid }
+                total = result.total; page = nextPage; canLoadMore = result.hasMore
+                state = when {
+                    items.isNotEmpty() || canLoadMore -> FollowState.READY
+                    total == 0L -> FollowState.EMPTY
+                    else -> FollowState.ERROR
                 }
-            }
-            loading = false
-            inFlight = false
-            AppLog.i(
-                "Follow",
-                "关注 ${result.size} 个（已登录=$isLoggedIn 状态=$state）",
-            )
+                AppLog.i("Follow", "关注第$page 页，累计 ${items.size} 个，更多=$canLoadMore")
+            } catch (e: CancellationException) { throw e }
+            catch (e: Exception) { if (g == generation) {
+                failedMore = nextPage > 1
+                loadError = graph.getString(R.string.follow_failed)
+                if (items.isEmpty() && !canLoadMore) state = FollowState.ERROR
+                AppLog.w("Follow", e.javaClass.simpleName)
+            } }
+            finally { if (g == generation) { loading = false; moreLoading = false } }
         }
     }
 }

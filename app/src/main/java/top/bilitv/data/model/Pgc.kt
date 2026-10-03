@@ -1,5 +1,7 @@
 package top.bilitv.data.model
 
+import top.bilitv.R
+
 /**
  * PGC 内容的一个「季」（番剧一季、一部电影、一部纪录片……）。
  *
@@ -48,6 +50,8 @@ data class PgcSeason(
 }
 
 data class PgcFilterValue(val id: String, val label: String)
+/** Pagination describes the raw server page, even when unusable cards are omitted. */
+data class PgcIndexPage(val items: List<PgcSeason>, val hasMore: Boolean)
 data class PgcFilterField(val id: String, val label: String, val values: List<PgcFilterValue>)
 
 /**
@@ -57,14 +61,14 @@ data class PgcFilterField(val id: String, val label: String, val values: List<Pg
  * 所以不能用 `entries[seasonType - 1]` 去查，必须按 id 匹配。
  * 编号含义是 2026-09-29 逐个探出来的，不是猜的（见 `tools/probe_feeds.py`）。
  */
-enum class PgcType(val id: Int, val label: String) {
-    MOVIE(2, "电影"),
-    TV(5, "电视剧"),
-    DOCUMENTARY(3, "纪录片"),
-    VARIETY(7, "综艺"),
-    BANGUMI(1, "番剧"),
-    GUOCHUANG(4, "国创"),
-    SHORT_PLAY(8, "短剧"),
+enum class PgcType(val id: Int, val labelRes: Int) {
+    MOVIE(2, R.string.section_movie),
+    TV(5, R.string.section_tv),
+    DOCUMENTARY(3, R.string.section_documentary),
+    VARIETY(7, R.string.section_variety),
+    BANGUMI(1, R.string.section_bangumi),
+    GUOCHUANG(4, R.string.section_guochuang),
+    SHORT_PLAY(8, R.string.section_short_play),
     ;
 
     companion object {
@@ -180,3 +184,6 @@ data class FavFolder(
     val count: Int,
     val favored: Boolean? = null,
 )
+
+/** 是否还有页来自接口，与过滤后的可播放卡片数量无关。 */
+data class FavResourcePage(val items: List<FeedItem>, val hasMore: Boolean)

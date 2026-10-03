@@ -10,10 +10,13 @@ import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import top.bilitv.data.settings.ThemeSkin
+import top.bilitv.data.settings.CardSize
 
 /**
  * 一套皮肤的**全部数值**。
@@ -46,9 +49,9 @@ import top.bilitv.data.settings.ThemeSkin
  * @param textSecondary 副标题、元信息（UP 主 / 播放量）。
  * @param textTertiary 更弱的提示（时间码、占位说明）。
  * @param divider 分隔线，也用作**未聚焦卡片**的描边。
- * @param cardColumns **一屏几列，是"内容密度"的唯一开关。**
- *   ⚠️ 2026-09-29 从 `cardMinWidth`（自适应）改成固定列数：自适应在 960dp 画布上只算出 2 列，
- *   两张巨型卡片，和 BT 差得远。BT 就是固定列数（960×540dp 上 4 列、每列 206dp），照做。
+ * @param cardColumns 0为自动；手动列数优先，极窄窗口保护可读宽度。
+ * @param collectionColumns 影视海报的独立列数，0为自动。
+ * @param cardMinWidth 以960×540dp电视标准4列为基准，宽屏自动增加列数。
  * @param screenPadding 页面左右留白。BT 实测只有 13dp，很紧。
  * @param cardGap 同一行内卡片之间的**横向**距离。
  * @param rowGap 网格行之间的**纵向**距离。比 [cardGap] 小（BT 实测 20 : 10）。
@@ -63,6 +66,8 @@ import top.bilitv.data.settings.ThemeSkin
  */
 data class BiliTheme(
     val skin: ThemeSkin,
+    val animations: Boolean = true,
+    val showScrollbars: Boolean = true,
 
     // ------------------------------------------------------------ 底色阶梯
 
@@ -95,6 +100,8 @@ data class BiliTheme(
     // ------------------------------------------------------------ 布局密度
 
     val cardColumns: Int,
+    val collectionColumns: Int,
+    val cardMinWidth: Dp,
     val screenPadding: Dp,
     val cardGap: Dp,
     val rowGap: Dp,
@@ -187,9 +194,9 @@ data class BiliTheme(
 private val CinemaTheme = BiliTheme(
     skin = ThemeSkin.CINEMA,
 
-    background = Color(0xFF0A0A0C),
-    surface = Color(0xFF15151A),
-    surfaceHigh = Color(0xFF1E1E25),
+    background = Color(0xFF000000),
+    surface = Color(0xFF0C0C0E),
+    surfaceHigh = Color(0xFF17171C),
 
     primary = Color(0xFFFB7299),
     onPrimary = Color(0xFF1A1015),
@@ -202,12 +209,14 @@ private val CinemaTheme = BiliTheme(
     textTertiary = Color(0x80F2F2F5),
     divider = Color(0x14FFFFFF),
 
-    navBackground = Color(0xFF101014),
+    navBackground = Color(0xFF08080A),
     navText = Color(0xB3F2F2F5),
     navSelectedFill = Color(0xFF23232B),
     navSelectedText = Color(0xFFFB7299),
 
-    cardColumns = 4,
+    cardColumns = 0,
+    collectionColumns = 0,
+    cardMinWidth = 204.dp,
     screenPadding = 14.dp,
     cardGap = 20.dp,
     rowGap = 10.dp,
@@ -253,7 +262,9 @@ private val ClassicTheme = BiliTheme(
     navSelectedFill = Color(0xFFFB7299),
     navSelectedText = Color(0xFFFFFFFF),
 
-    cardColumns = 5,
+    cardColumns = 0,
+    collectionColumns = 0,
+    cardMinWidth = 210.dp,
     screenPadding = 12.dp,
     cardGap = 14.dp,
     rowGap = 10.dp,
@@ -272,6 +283,13 @@ private val ClassicTheme = BiliTheme(
 fun ThemeSkin.values(): BiliTheme = when (this) {
     ThemeSkin.CINEMA -> CinemaTheme
     ThemeSkin.CLASSIC -> ClassicTheme
+    // Main brand seeds; tonal states use the same hue and alpha over the classic neutral base.
+    ThemeSkin.WECHAT -> ClassicTheme.copy(skin = this, primary = Color(0xFF07C160),
+        onPrimary = Color.Black, focusRing = Color(0xFF07C160), focusFill = Color(0x5407C160),
+        navSelectedFill = Color(0xFF07C160), navSelectedText = Color.Black)
+    ThemeSkin.ALIPAY -> ClassicTheme.copy(skin = this, primary = Color(0xFF1677FF),
+        onPrimary = Color.White, focusRing = Color(0xFF69B1FF), focusFill = Color(0x541677FF),
+        navSelectedFill = Color(0xFF1677FF), navSelectedText = Color.White)
     ThemeSkin.PORNHUB -> CinemaTheme.copy(
         skin = this, background = Color(0xFF000000), surface = Color(0xFF161616), surfaceHigh = Color(0xFF252525),
         primary = Color(0xFFFF9900), onPrimary = Color.Black, focusRing = Color(0xFFFFB347),
@@ -286,6 +304,8 @@ fun ThemeSkin.values(): BiliTheme = when (this) {
  * 频率极低；而 static 版本在值变化时会**重组整个 provider 子树**，
  * 这恰好是换肤想要的效果（全部重绘），也省掉了逐读取点追踪的开销。
  */
+val LocalPlaybackDensity = staticCompositionLocalOf { Density(1f) }
+
 val LocalBiliTheme = staticCompositionLocalOf { CinemaTheme }
 
 /** 取当前皮肤。写成 `AppTheme.current` 比一路 `LocalBiliTheme.current` 短。 */
@@ -320,7 +340,7 @@ private val TvTypography = Typography(
 private fun BiliTheme.toColorScheme() = darkColorScheme(
     primary = primary,
     onPrimary = onPrimary,
-    secondary = if (skin == ThemeSkin.PORNHUB) primary else Color(0xFF00AEEC),
+    secondary = primary,
     background = background,
     onBackground = textPrimary,
     surface = surface,
@@ -330,6 +350,8 @@ private fun BiliTheme.toColorScheme() = darkColorScheme(
     outline = divider,
 )
 
+val BiliTheme.pageBackground: Color get() = background
+
 /**
  * 主题入口。
  *
@@ -338,10 +360,22 @@ private fun BiliTheme.toColorScheme() = darkColorScheme(
 @Composable
 fun BiliTvTheme(
     skin: ThemeSkin = ThemeSkin.CINEMA,
+    cardColumns: Int = 0,
+    collectionColumns: Int = 0,
+    cardSize: CardSize = CardSize.STANDARD,
+    fontScale: Float = 1f,
+    animations: Boolean = true,
+    showScrollbars: Boolean = true,
+    backgroundStyle: top.bilitv.data.settings.BackgroundStyle = top.bilitv.data.settings.BackgroundStyle.DEFAULT,
     content: @Composable () -> Unit,
 ) {
-    val theme = skin.values()
-    CompositionLocalProvider(LocalBiliTheme provides theme) {
+    val base = skin.values()
+    val theme = base.copy(background = backgroundStyle.argb?.let { Color(it) } ?: base.background,
+        animations = animations, showScrollbars = showScrollbars, cardColumns = CardSize.columns(cardColumns),
+        collectionColumns = CardSize.columns(collectionColumns), cardMinWidth = base.cardMinWidth * cardSize.scale)
+    val density = LocalDensity.current
+    CompositionLocalProvider(LocalBiliTheme provides theme, LocalPlaybackDensity provides density,
+        LocalDensity provides Density(density.density, density.fontScale * top.bilitv.data.settings.InterfaceTuning.font(fontScale))) {
         MaterialTheme(
             colorScheme = theme.toColorScheme(),
             typography = TvTypography,

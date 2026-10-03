@@ -26,6 +26,7 @@ import top.bilitv.data.model.VideoDetail
 import top.bilitv.data.model.VideoPage
 import top.bilitv.data.model.VideoCollectionEpisode
 import top.bilitv.data.model.WeeklyIssue
+import top.bilitv.data.model.requireActionResponse
 
 /**
  * 响应解析（纯函数，可单测）。
@@ -118,6 +119,10 @@ fun parseVideoDetail(json: String): VideoDetail? {
         badge = badgeOf(d),
         collectionTitle = season?.str("title").orEmpty(),
         collection = collection,
+        chargingExclusive = d.optBoolean("is_upower_exclusive", false) || d.optBoolean("is_charging_arc", false),
+        chargingPreviewAvailable = if (d.has("is_upower_preview") && !d.isNull("is_upower_preview"))
+            d.optBoolean("is_upower_preview") else null,
+        paidContent = d.objOrNull("rights")?.optInt("ugc_pay") == 1 || d.objOrNull("rights")?.optInt("is_ugc_pay") == 1,
     )
 }
 
@@ -143,7 +148,8 @@ fun parseRelatedSeasons(json: String): List<FeedItem>? {
  * 这里直接跳过无 bvid 的条目（界面层广告过滤的第一道）。
  */
 fun parseFeedRecommend(json: String): List<FeedItem> {
-    val arr = dataOf(json)?.arrOrNull("item") ?: return emptyList()
+    val data = dataOf(json) ?: return emptyList()
+    val arr = data.arrOrNull("item") ?: data.arrOrNull("items") ?: return emptyList()
     val out = ArrayList<FeedItem>(arr.length())
     for (i in 0 until arr.length()) {
         val o = arr.optJSONObject(i) ?: continue
@@ -260,8 +266,30 @@ fun parseWeeklyOne(json: String): List<FeedItem> = itemsFrom(json, "list")
  * 3. `duration` 是 **`"04:47"` 这样的字符串**，不是秒数；
  * 4. 结果里混着用户、番剧、专栏等各种类型，只有 `type == "video"` 才是视频。
  */
-fun parseSearchVideo(json: String): List<FeedItem> {
-    val arr = dataOf(json)?.arrOrNull("result") ?: return emptyList()
+fun parseSearchVideoPage(json: String, page: Int): top.bilitv.data.model.SearchVideoPage {
+    require(page > 0)
+    val data = requireActionResponse(json).optJSONObject("data") ?: error("搜索缺少数据")
+    fun count(key: String): Long? = if (!data.has(key) || data.isNull(key)) null else
+        data.get(key).toString().toLongOrNull()?.takeIf { it >= 0 } ?: error("搜索${key}格式异常")
+    val returnedPage = count("page")
+    check(returnedPage == null || returnedPage == page.toLong()) { "搜索页码与请求不一致" }
+    val pages = count("numPages")
+    val total = count("numResults")
+    val size = (count("pagesize") ?: count("page_size") ?: 20L).also {
+        check(it in 1..Int.MAX_VALUE.toLong()) { "搜索每页条数异常" }
+    }
+    check(data.has("result")) { "搜索缺少结果列表" }
+    val raw = data.optJSONArray("result") ?: if (data.isNull("result") &&
+        (pages == 0L || total == 0L)) JSONArray() else error("搜索结果格式异常")
+    val more = when {
+        pages != null -> page < pages
+        total != null -> page.toLong() * size < total
+        else -> raw.length() >= size
+    }
+    return top.bilitv.data.model.SearchVideoPage(searchVideosOf(raw), more)
+}
+
+private fun searchVideosOf(arr: JSONArray): List<FeedItem> {
     val out = ArrayList<FeedItem>(arr.length())
     for (i in 0 until arr.length()) {
         val o = arr.optJSONObject(i) ?: continue
@@ -336,8 +364,14 @@ fun parseHotSearch(json: String, limit: Int = 12): List<String> {
  * @param liveFilter `liveStatus == 1` 才算正在直播。少数情况下接口会给
  *   `live` 对象但 `live_status` 为 0（没在播），不能只看对象在不在。
  */
-fun parseFollowings(json: String): List<UpUser> {
-    val arr = dataOf(json)?.arrOrNull("list") ?: return emptyList()
+fun parseFollowingPage(json: String, pn: Int, ps: Int): top.bilitv.data.model.FollowingPage {
+    require(pn > 0 && ps > 0)
+    val data = requireActionResponse(json).optJSONObject("data") ?: error("关注数据格式异常")
+    val total = if (data.has("total") && !data.isNull("total"))
+        data.get("total").toString().toLongOrNull()?.takeIf { it >= 0 } ?: error("关注总数格式异常") else null
+    check(data.has("list")) { "关注缺少列表" }
+    val arr = if (data.isNull("list") && total == 0L) JSONArray()
+        else data.optJSONArray("list") ?: error("关注列表格式异常")
     val out = ArrayList<UpUser>(arr.length())
     for (i in 0 until arr.length()) {
         val o = arr.optJSONObject(i) ?: continue
@@ -355,11 +389,9 @@ fun parseFollowings(json: String): List<UpUser> {
             )
         )
     }
-    return out
+    return top.bilitv.data.model.FollowingPage(out.distinctBy { it.mid }, total,
+        if (total != null) pn.toLong() * ps < total else arr.length() >= ps)
 }
-
-/** `data.total` —— 关注总数。取不到返回 0（界面就不显示"共 N 个"）。 */
-fun parseFollowingTotal(json: String): Long = dataOf(json)?.num("total") ?: 0L
 
 /**
  * 某个 UP 主的投稿列表 `/x/space/wbi/arc/search`。
@@ -374,6 +406,24 @@ fun parseFollowingTotal(json: String): Long = dataOf(json)?.num("total") ?: 0L
  */
 fun parseUpVideos(json: String): List<FeedItem> {
     val vlist = dataOf(json)?.objOrNull("list")?.arrOrNull("vlist") ?: return emptyList()
+    return upVideosOf(vlist)
+}
+
+/** Page boundaries refer to server slots, including entries filtered from the UI. */
+fun parseUpVideoPage(json: String, pn: Int, ps: Int): top.bilitv.data.model.UpVideoPage {
+    require(pn > 0 && ps > 0)
+    val data = requireActionResponse(json).optJSONObject("data") ?: error("投稿数据格式异常")
+    val list = data.optJSONObject("list") ?: error("投稿缺少列表")
+    check(list.has("vlist")) { "投稿缺少视频列表" }
+    val raw = if (list.isNull("vlist")) JSONArray() else list.optJSONArray("vlist") ?: error("投稿列表格式异常")
+    val page = data.optJSONObject("page")
+    val count = if (page != null && page.has("count") && !page.isNull("count"))
+        page.get("count").toString().toLongOrNull()?.takeIf { it >= 0 } ?: error("投稿总数格式异常") else null
+    return top.bilitv.data.model.UpVideoPage(upVideosOf(raw), count ?: 0L,
+        if (count != null) pn.toLong() * ps < count else raw.length() > 0)
+}
+
+private fun upVideosOf(vlist: JSONArray): List<FeedItem> {
     val out = ArrayList<FeedItem>(vlist.length())
     for (i in 0 until vlist.length()) {
         val o = vlist.optJSONObject(i) ?: continue
@@ -960,6 +1010,26 @@ fun parsePgcDetail(json: String): PgcDetail? {
  * 字段坑：`score` 和 `order` 都是**字符串**（`"8.8"` / `"1342.5万追番"`），
  * `optDouble` 会得到 0，必须按字符串读。
  */
+fun parsePgcIndexPage(json: String, page: Int, pageSize: Int): top.bilitv.data.model.PgcIndexPage {
+    require(page > 0 && pageSize > 0)
+    val root = JSONObject(json)
+    require(root.optInt("code", -1) == 0) { "影视列表请求失败" }
+    val data = root.optJSONObject("data") ?: root.optJSONObject("result") ?: error("影视列表缺少数据")
+    val flag = when (val value = data.opt("has_next")) {
+        true, 1, "1", "true" -> true
+        false, 0, "0", "false" -> false
+        null, JSONObject.NULL -> null
+        else -> error("影视分页标记无效：${value.javaClass.simpleName}")
+    }
+    val raw = data.optJSONArray("list")
+    require(raw != null || data.isNull("list") && data.has("list") && flag == false) { "影视列表格式异常" }
+    val total = if (data.has("total") && !data.isNull("total")) {
+        data.opt("total").toString().toLongOrNull()?.takeIf { it >= 0 } ?: error("影视总数无效")
+    } else null
+    val more = flag ?: total?.let { page.toLong() * pageSize < it } ?: ((raw?.length() ?: 0) >= pageSize)
+    return top.bilitv.data.model.PgcIndexPage(parsePgcIndex(json), more)
+}
+
 fun parsePgcIndex(json: String): List<PgcSeason> {
     val arr = dataOf(json)?.arrOrNull("list") ?: return emptyList()
     val out = ArrayList<PgcSeason>(arr.length())
@@ -1042,13 +1112,34 @@ fun parsePlayInfo(json: String): PlayInfo? {
         }.orEmpty()
 
     val videos = streams("video")
-    val audios = streams("audio")
+    val audios = buildList {
+        addAll(streams("audio"))
+        dash.objOrNull("dolby")?.arrOrNull("audio")?.let { arr ->
+            for (i in 0 until arr.length()) streamOf(arr.optJSONObject(i))?.let { add(it) }
+        }
+        streamOf(dash.objOrNull("flac")?.objOrNull("audio"))?.let { add(it) }
+    }.distinctBy { Triple(it.qualityId, it.codecs, it.baseUrl) }
     if (videos.isEmpty()) return null
 
     return PlayInfo(
         durationMs = dash.num("duration") * 1000L,
         videos = videos,
         audios = audios,
+        isPreview = top.bilitv.data.model.explicitPreviewState(json) == true,
+        officialClips = buildList {
+            val clips = d.arrOrNull("clip_info_list") ?: d.arrOrNull("clipInfoList")
+                ?: payload.arrOrNull("clip_info_list")
+            for (i in 0 until (clips?.length() ?: 0)) {
+                val clip = clips?.optJSONObject(i) ?: continue
+                val intro = when (clip.str("clipType").ifBlank { clip.str("clip_type") }) {
+                    "CLIP_TYPE_OP", "1" -> true
+                    "CLIP_TYPE_ED", "2" -> false
+                    else -> continue
+                }
+                top.bilitv.data.model.OfficialClip.fromSeconds(clip.optDouble("start", Double.NaN),
+                    clip.optDouble("end", Double.NaN), intro, dash.num("duration") * 1000L)?.let(::add)
+            }
+        }.distinct(),
         qualityLabels = buildMap {
             val formats = d.arrOrNull("support_formats")
             for (i in 0 until (formats?.length() ?: 0)) {
@@ -1131,22 +1222,33 @@ fun parseDynamicFeed(json: String): DynamicFeed {
     val root = runCatching { JSONObject(json) }.getOrNull()
         ?: return DynamicFeed(CODE_UNPARSEABLE, emptyList(), "", false)
     val code = root.optInt("code", CODE_UNPARSEABLE)
-    val data = root.objOrNull("data") ?: return DynamicFeed(code, emptyList(), "", false)
-    val arr = data.arrOrNull("items") ?: return DynamicFeed(code, emptyList(), "", false)
+    if (code != 0) return DynamicFeed(code, emptyList(), "", false)
+    val invalid = DynamicFeed(CODE_UNPARSEABLE, emptyList(), "", false)
+    val data = root.objOrNull("data") ?: return invalid
+    val arr = data.arrOrNull("items") ?: return invalid
+    val hasMore = when (val flag = data.opt("has_more")) {
+        null, JSONObject.NULL -> false
+        is Boolean -> flag
+        1, 1L, "1", "true" -> true
+        0, 0L, "0", "false" -> false
+        else -> return invalid
+    }
+    val offset = data.str("offset")
+    if (hasMore && offset.isBlank()) return invalid
 
     val items = (0 until arr.length()).mapNotNull { dynamicItemOf(arr.optJSONObject(it)) }
 
     return DynamicFeed(
         code = code,
         items = items,
-        nextOffset = data.str("offset"),
+        nextOffset = offset,
         /*
          * `has_more` 取不到就当"没有下一页"。
          *
          * 这是**安全方向**：停在那儿只是少翻一页，而反过来（缺字段当 true）
          * 会在字段改名时把翻页请求打满 —— 那才是要出事的那个方向。
          */
-        hasMore = data.optBoolean("has_more", false),
+        hasMore = hasMore,
     )
 }
 
@@ -1287,7 +1389,25 @@ fun parseFavFolders(json: String): List<FavFolder> = try {
  * 而只认一条的话下次漂移又要重踩一遍。
  */
 fun parseFavResources(json: String): List<top.bilitv.data.model.FeedItem> {
-    val arr = dataOf(json)?.arrOrNull("medias") ?: return emptyList()
+    return favResourcesOf(dataOf(json) ?: return emptyList())
+}
+
+fun parseFavResourcePage(json: String): top.bilitv.data.model.FavResourcePage {
+    val data = top.bilitv.data.model.requireActionResponse(json).optJSONObject("data")
+        ?: throw java.io.IOException("收藏接口缺少列表数据")
+    if (!data.has("medias") || (!data.isNull("medias") && data.optJSONArray("medias") == null))
+        throw java.io.IOException("收藏列表格式异常")
+    val more = when (data.opt("has_more")) {
+        true, 1, 1L, "true", "1" -> true
+        false, 0, 0L, "false", "0" -> false
+        null, JSONObject.NULL -> (data.optJSONArray("medias")?.length() ?: 0) > 0
+        else -> throw java.io.IOException("收藏分页标记异常")
+    }
+    return top.bilitv.data.model.FavResourcePage(favResourcesOf(data), more)
+}
+
+private fun favResourcesOf(data: JSONObject): List<top.bilitv.data.model.FeedItem> {
+    val arr = data.arrOrNull("medias") ?: return emptyList()
     val out = ArrayList<top.bilitv.data.model.FeedItem>(arr.length())
     for (i in 0 until arr.length()) {
         val o = arr.optJSONObject(i) ?: continue
@@ -1313,4 +1433,30 @@ fun parseFavResources(json: String): List<top.bilitv.data.model.FeedItem> {
         )
     }
     return out
+}
+
+/** App HTTP cards use numeric AV ids and formatted cover statistics, not the Web schema. */
+fun parseAppFeedRecommend(json: String): List<FeedItem> {
+    val arr = dataOf(json)?.arrOrNull("items") ?: return emptyList()
+    fun count(s: String): Long {
+        val number = s.removeSuffix("万").removeSuffix("亿").replace(",", "").toDoubleOrNull() ?: return 0
+        if (!number.isFinite() || number < 0) return 0
+        return (number * when { s.endsWith("亿") -> 100_000_000; s.endsWith("万") -> 10_000; else -> 1 }).toLong()
+    }
+    return (0 until arr.length()).mapNotNull { i ->
+        val o = arr.optJSONObject(i) ?: return@mapNotNull null
+        if (o.str("card_goto") != "av" || o.str("goto") == "ad" || (o.has("ad_info") && !o.isNull("ad_info"))) return@mapNotNull null
+        val player = o.objOrNull("player_args")
+        val args = o.objOrNull("args")
+        val aid = player?.num("aid")?.takeIf { it > 0 } ?: args?.num("aid")?.takeIf { it > 0 } ?: o.num("param")
+        val bvid = top.bilitv.data.model.bvidOfAid(aid) ?: return@mapNotNull null
+        if (o.str("title").isBlank() || o.str("cover").isBlank()) return@mapNotNull null
+        val time = o.str("cover_right_text").split(":").map { it.toIntOrNull() }
+        val duration = player?.optInt("duration")?.takeIf { it > 0 } ?: if (time.size in 2..3 &&
+            time.all { it != null && it >= 0 } && time.drop(1).all { it!! < 60 })
+            time.fold(0L) { total, v -> total * 60 + v!! }.coerceAtMost(Int.MAX_VALUE.toLong()).toInt() else 0
+        FeedItem(bvid = bvid, title = o.str("title"), cover = o.str("cover"), ownerName = args?.str("up_name").orEmpty(),
+            durationSec = duration, viewCount = count(o.str("cover_left_text_1")), danmakuCount = count(o.str("cover_left_text_2")),
+            badge = badgeOf(o))
+    }
 }

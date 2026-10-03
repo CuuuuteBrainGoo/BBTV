@@ -2,6 +2,7 @@ package top.bilitv.ui.settings
 
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -9,6 +10,7 @@ import androidx.compose.runtime.*
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusProperties
@@ -19,6 +21,7 @@ import androidx.compose.ui.input.key.type
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.Dialog
 import top.bilitv.R
 import top.bilitv.data.settings.PlaybackTuning
 import top.bilitv.data.settings.QualityOptions
@@ -59,8 +62,6 @@ fun itemBody(
     onAutoLowerQuality: (Boolean) -> Unit,
     preferHevc: Boolean,
     onPreferHevc: (Boolean) -> Unit,
-    autoNext: Boolean,
-    onAutoNext: (Boolean) -> Unit,
     detailPage: Boolean,
     onDetailPage: (Boolean) -> Unit,
     singleBackExit: Boolean,
@@ -87,16 +88,18 @@ fun itemBody(
     // ------------------------------------------------------------ 存储
     cacheBytes: Long,
     onClearCache: () -> Unit,
-    onClearLog: () -> Unit,
     // ------------------------------------------------------------ 关于
 
     appVersion: String,
+    onResetAppearance: () -> Unit,
+    onResetPlayback: () -> Unit,
     firstFocus: FocusRequester? = null,
     lastFocus: FocusRequester? = null,
     headUp: FocusRequester? = null,
     tailDown: FocusRequester? = null,
 ) {
     // 项目区所有行共用的修饰：左键回分类列（锚由 SettingsScreen 通过 CompositionLocal 提供）
+    val context = LocalContext.current
     val backLeft = Modifier.backToCategories()
 
     when (item) {
@@ -106,12 +109,64 @@ fun itemBody(
         SettingsItem.INTERFACE_GENERAL -> InterfaceGeneralSettings(settings,
             firstFocus, lastFocus, headUp, tailDown)
 
+        SettingsItem.CARD_LAYOUT -> CardLayoutSettings(settings,
+            firstFocus, lastFocus, headUp, tailDown)
+
+        SettingsItem.INTERFACE_LAYOUT -> InterfaceLayoutSettings(settings, firstFocus, lastFocus, headUp, tailDown)
+        SettingsItem.RECOMMEND_SOURCE -> {
+            var source by remember { mutableStateOf(settings.recommendSource) }
+            ChoiceRow(stringResource(R.string.settings_recommend_source), stringResource(R.string.settings_recommend_source_hint),
+                top.bilitv.data.settings.RecommendSource.entries.toList(), source, { context.getString(when (it) { top.bilitv.data.settings.RecommendSource.WEB -> R.string.source_web; top.bilitv.data.settings.RecommendSource.APP -> R.string.source_app_http }) },
+                { source = it; settings.recommendSource = it }, backLeft)
+        }
+        SettingsItem.RECOMMEND_PERSONALIZED -> {
+            var enabled by remember { mutableStateOf(settings.personalizedRecommendations) }
+            ToggleRow(stringResource(R.string.settings_personalized), stringResource(R.string.settings_personalized_hint),
+                enabled, { enabled = it; settings.personalizedRecommendations = it }, backLeft)
+        }
+        SettingsItem.VIDEO_API_SOURCE -> {
+            var source by remember { mutableStateOf(settings.videoApiSource) }
+            ChoiceRow(stringResource(R.string.settings_video_api), stringResource(R.string.settings_video_api_hint),
+                top.bilitv.data.settings.VideoApiSource.entries.toList(), source, { it.label },
+                { source = it; settings.videoApiSource = it }, backLeft)
+        }
+        SettingsItem.RECOMMEND_BACKTRACK -> {
+            var enabled by remember { mutableStateOf(settings.showRecommendBacktrack) }
+            ToggleRow(stringResource(R.string.settings_backtrack), stringResource(R.string.settings_backtrack_hint),
+                enabled, { enabled = it; settings.showRecommendBacktrack = it }, backLeft)
+        }
+        SettingsItem.DETAIL_LAYOUT -> {
+            var ids by remember { mutableStateOf(settings.detailSections) }
+            var meta by remember { mutableStateOf(settings.detailShowMeta) }
+            ToggleRow(stringResource(R.string.settings_detail_meta), stringResource(R.string.settings_detail_meta_hint), meta,
+                { meta = it; settings.detailShowMeta = it }, backLeft)
+            OrderPicker(all = top.bilitv.data.settings.DetailLayout.ALL.map {
+                PickItem(it, context.getString(when (it) { "HERO" -> R.string.detail_cover_fixed; "PARTS" -> R.string.detail_parts; else -> R.string.detail_description }), pinned = it == "HERO", locked = it == "HERO")
+            }, enabledIds = ids, onChange = { ids = top.bilitv.data.settings.DetailLayout.sections(it); settings.detailSections = ids },
+                firstFocus = firstFocus, lastFocus = lastFocus, headUp = headUp, tailDown = tailDown)
+        }
+        SettingsItem.TOUCH_GESTURES -> TouchGestureSettings(settings, backLeft)
+        SettingsItem.REMOTE_KEYS -> RemoteKeySettings(settings, backLeft)
+        SettingsItem.PLAYBACK_RESET -> SettingRow(stringResource(R.string.settings_reset), stringResource(R.string.settings_reset_playback_hint), stringResource(R.string.action_reset), backLeft) { onResetPlayback() }
+        SettingsItem.PLAYBACK_DISPLAY -> PlaybackDisplaySettings(settings, backLeft)
+        SettingsItem.APPEARANCE_RESET -> SettingRow(stringResource(R.string.settings_reset), stringResource(R.string.settings_reset_appearance_hint), stringResource(R.string.action_reset),
+            backLeft.then(if (firstFocus != null) Modifier.focusRequester(firstFocus) else Modifier)
+                .then(if (lastFocus != null) Modifier.focusRequester(lastFocus) else Modifier)) { onResetAppearance() }
+
+        SettingsItem.BACKGROUND_COLOR -> {
+            var style by remember { mutableStateOf(settings.backgroundStyle) }
+            ChoiceRow(stringResource(R.string.settings_background), stringResource(R.string.settings_background_hint),
+                top.bilitv.data.settings.BackgroundStyle.entries.toList(), style, { context.getString(when (it) { top.bilitv.data.settings.BackgroundStyle.DEFAULT -> R.string.background_default; top.bilitv.data.settings.BackgroundStyle.BLACK -> R.string.background_black; top.bilitv.data.settings.BackgroundStyle.GRAY -> R.string.background_gray; top.bilitv.data.settings.BackgroundStyle.BLUE -> R.string.background_blue; top.bilitv.data.settings.BackgroundStyle.WARM -> R.string.background_warm }) },
+                { style = it; settings.backgroundStyle = it }, backLeft
+                    .then(if (firstFocus != null) Modifier.focusRequester(firstFocus) else Modifier)
+                    .focusProperties { if (headUp != null) up = headUp; if (tailDown != null) down = tailDown })
+        }
         SettingsItem.SKIN -> ChoiceRow(
-            title = "皮肤",
-            desc = "换了立刻生效，不用重启",
+            title = stringResource(R.string.settings_skin),
+            desc = stringResource(R.string.settings_skin_hint),
             options = ThemeSkin.entries.toList(),
             selected = skin,
-            labelOf = { it.label },
+            labelOf = { context.getString(when (it) { ThemeSkin.CINEMA -> R.string.skin_cinema; ThemeSkin.CLASSIC -> R.string.skin_classic; ThemeSkin.PORNHUB -> R.string.skin_pornhub; ThemeSkin.WECHAT -> R.string.skin_wechat; ThemeSkin.ALIPAY -> R.string.skin_alipay }) },
             // 只更新本地 state（让按钮立刻变成选中态）+ 上报。
             // 落盘由 `MainActivity` 做 —— 皮肤状态的拥有者负责持久化，
             // 这里再存一次只是重复，而且以后多一个换肤入口就要多改一处。
@@ -125,7 +180,7 @@ fun itemBody(
         )
 
         SettingsItem.HOME_SECTIONS -> PickerBlock(
-            title = "首页分区",
+            title = stringResource(R.string.settings_home_sections),
             note = "",
             // 后面还有「侧栏栏目」和「控制栏按钮」两个选择器 → pinTail = false（留在它们之间能往下走）
         ) { HomeSectionPicker(enabledIds = homeSections, onChange = onHomeSections,
@@ -135,17 +190,17 @@ fun itemBody(
             // ★ 2026-09-30 少爷第 8 条：**侧栏也能配**。
             //   和「首页分区」是同一个组件，所以手感必然一致。
             //   唯一差别是「首页」「设置」带固定标记 —— 理由见 `NavTabPicker`。
-            title = "侧栏栏目",
+            title = stringResource(R.string.settings_rail_tabs),
 
-            note = "首页和设置固定位置；搜索和我的可排序；这四项不可隐藏",
+            note = stringResource(R.string.settings_rail_tabs_hint),
             // 后面还有「控制栏按钮」，末尾允许向下离开
         ) { NavTabPicker(enabledIds = railIds, onChange = onRailIds,
             firstFocus = firstFocus, lastFocus = lastFocus, headUp = headUp, tailDown = tailDown) }
 
         SettingsItem.PLAYER_BUTTONS -> PickerBlock(
             // ★ 2026-09-30 少爷第 8 条的第三处：**控制栏也能配**。
-            title = "控制栏按钮",
-            note = "改完下次进播放页生效；播放/暂停不可隐藏；点赞长按 OK 1.5 秒三连",
+            title = stringResource(R.string.settings_player_buttons),
+            note = stringResource(R.string.settings_player_buttons_hint),
         ) {
             // ⛔ 它是同一分类里的**最后一个**选择器 → pinTail = true。
             // 不钉的话光标走到末尾时后面没有已组合的节点，几何搜索会往回跳（真实踩过，见 `OrderPicker.pinTail`）。
@@ -179,17 +234,14 @@ fun itemBody(
         SettingsItem.DANMAKU_USERS,
         SettingsItem.SUBTITLE_LANGUAGE,
         SettingsItem.SUBTITLE_FONT,
-        SettingsItem.SUBTITLE_COLOR,
-        SettingsItem.SUBTITLE_POSITION,
         SettingsItem.SUBTITLE_BACKGROUND,
-        SettingsItem.SUBTITLE_FADE,
         SettingsItem.DANMAKU_RESET -> DanmakuSettingItem(item, settings, modifier = backLeft) {}
 
         // ============================================================ 广告
 
         SettingsItem.SPONSOR_ON -> ToggleRow(
-            title = "自动跳过",
-            desc = "按 BilibiliSponsorBlock 的社区标记跳过恰饭、片头片尾等片段",
+            title = stringResource(R.string.settings_sponsor),
+            desc = stringResource(R.string.settings_sponsor_hint),
             on = sponsorOn,
             onToggle = onSponsorOn,
             modifier = backLeft,
@@ -198,18 +250,18 @@ fun itemBody(
         SettingsItem.AD_FILTER -> ToggleRow(
             // ★ 这一项以前**没有任何入口**：`SettingsStore.filterUiAds` 一直默认开、
             //   首页也一直在读它，但设置页里从来没有这一行。等于用户永远改不了。
-            title = "过滤界面里的广告卡",
-            desc = "推荐流里那种没有有效视频的推广卡直接不显示",
+            title = stringResource(R.string.settings_ad_filter),
+            desc = stringResource(R.string.settings_ad_filter_hint),
             on = filterAds,
             onToggle = onFilterAds,
             modifier = backLeft,
         )
 
         SettingsItem.SPONSOR_CATEGORIES -> Column(modifier = backLeft) {
-            HintText("跳过类别：取消勾选后，该类片段不再自动跳过")
+            HintText(stringResource(R.string.settings_sponsor_categories_hint))
             SponsorCategory.entries.forEach { category ->
                 ToggleRow(
-                    title = category.label,
+                    title = stringResource(when (category) { SponsorCategory.SPONSOR -> R.string.sponsor_paid; SponsorCategory.SELF_PROMO -> R.string.sponsor_self; SponsorCategory.EXCLUSIVE_ACCESS -> R.string.sponsor_brand; SponsorCategory.INTRO -> R.string.sponsor_intro; SponsorCategory.OUTRO -> R.string.sponsor_outro; SponsorCategory.INTERACTION -> R.string.sponsor_interaction; SponsorCategory.PREVIEW -> R.string.sponsor_preview; SponsorCategory.FILLER -> R.string.sponsor_filler; SponsorCategory.MUSIC_OFFTOPIC -> R.string.sponsor_music; SponsorCategory.POI_HIGHLIGHT -> R.string.sponsor_highlight; SponsorCategory.OTHER -> R.string.sponsor_other }),
                     desc = null,
                     on = category in sponsorCats,
                     onToggle = { on -> onSponsorCats(if (on) sponsorCats + category else sponsorCats - category) },
@@ -221,88 +273,99 @@ fun itemBody(
 
         SettingsItem.SUBTITLE_ON -> {
             var on by remember { mutableStateOf(settings.subtitleEnabled) }
-            ToggleRow("字幕开关", "默认关闭；与播放器字幕按钮联动，不影响视频内嵌文字", on, {
+            ToggleRow(stringResource(R.string.settings_subtitle), stringResource(R.string.settings_subtitle_hint), on, {
                 settings.subtitleEnabled = it; on = it
             }, backLeft)
         }
 
         SettingsItem.QUALITY -> ChoiceRow(
-            title = "默认清晰度",
-            desc = "「自动」= 在这台设备能解的范围里取最高档。选不到指定档位时自动就近回退",
+            title = stringResource(R.string.settings_default_quality),
+            desc = stringResource(R.string.settings_default_quality_hint),
             options = QualityOptions.ALL,
             selected = QualityOptions.ALL.firstOrNull { it.id == quality } ?: QualityOptions.AUTO,
-            labelOf = { it.label },
+            labelOf = { when (it.id) { 0 -> context.getString(R.string.value_auto); 126 -> context.getString(R.string.quality_dolby); 112 -> context.getString(R.string.quality_high_bitrate); else -> it.label } },
             onSelect = { onQuality(it.id) },
             modifier = backLeft,
         )
 
-        SettingsItem.SEEK_SECONDS -> ChoiceRow("快进快退步长", "单击步长；长按逐步加速，松手跳到预览位置",
-            PlaybackTuning.SEEK_SECONDS, seekSeconds, { "$it 秒" }, onSeekSeconds, backLeft)
+        SettingsItem.SEEK_SECONDS -> ChoiceRow(stringResource(R.string.settings_seek_step), stringResource(R.string.settings_seek_step_hint),
+            PlaybackTuning.SEEK_SECONDS, seekSeconds, { context.getString(R.string.value_seconds, it) }, onSeekSeconds, backLeft)
+
+        SettingsItem.AUDIO_QUALITY -> {
+            var audio by remember { mutableStateOf(settings.preferredAudioQuality) }
+            ChoiceRow(stringResource(R.string.settings_audio), stringResource(R.string.settings_audio_hint),
+                top.bilitv.data.settings.AudioQuality.entries.toList(), audio, { context.getString(when (it) { top.bilitv.data.settings.AudioQuality.AUTO -> R.string.audio_auto; top.bilitv.data.settings.AudioQuality.AAC_192 -> R.string.audio_192; top.bilitv.data.settings.AudioQuality.AAC_132 -> R.string.audio_132; top.bilitv.data.settings.AudioQuality.AAC_64 -> R.string.audio_64; top.bilitv.data.settings.AudioQuality.DOLBY -> R.string.audio_dolby; top.bilitv.data.settings.AudioQuality.HI_RES -> R.string.audio_hires }) },
+                { audio = it; settings.preferredAudioQuality = it }, backLeft)
+        }
+
+        SettingsItem.PERFORMANCE -> {
+            var mode by remember { mutableStateOf(settings.playbackPerformance) }
+            ChoiceRow(stringResource(R.string.settings_performance), stringResource(R.string.settings_performance_hint),
+                top.bilitv.data.settings.PlaybackPerformance.entries.toList(), mode, { context.getString(when (it) { top.bilitv.data.settings.PlaybackPerformance.HIGH -> R.string.performance_high; top.bilitv.data.settings.PlaybackPerformance.BALANCED -> R.string.performance_balanced; top.bilitv.data.settings.PlaybackPerformance.MEMORY -> R.string.performance_memory }) },
+                { mode = it; settings.playbackPerformance = it }, backLeft)
+        }
 
         SettingsItem.AUTO_LOWER_QUALITY -> ToggleRow(
-            title = "卡顿时自动降低画质",
-            desc = "持续掉帧时逐级降低分辨率，保留播放进度；关闭后保持所选画质",
+            title = stringResource(R.string.settings_auto_lower),
+            desc = stringResource(R.string.settings_auto_lower_hint),
             on = autoLowerQuality,
             onToggle = onAutoLowerQuality,
             modifier = backLeft,
         )
 
         SettingsItem.PREFER_HEVC -> ToggleRow(
-            title = "同清晰度优先 HEVC",
-            desc = "同清晰度下优先选 HEVC，电视盒子普遍硬解更省电、更少掉帧",
+            title = stringResource(R.string.settings_hevc),
+            desc = stringResource(R.string.settings_hevc_hint),
             on = preferHevc,
             onToggle = onPreferHevc,
             modifier = backLeft,
         )
 
-        SettingsItem.AUTO_NEXT -> ToggleRow(
-            title = "自动连播下一集 / 下一P",
-            desc = "看完自动接着播下一集。最后一集不会回绕重播；「直播」不参与连播",
-            on = autoNext,
-            onToggle = onAutoNext,
-            modifier = backLeft,
-        )
+        SettingsItem.AUTO_NEXT -> {
+            var action by remember { mutableStateOf(settings.playbackEndAction) }
+            ChoiceRow(stringResource(R.string.settings_end_action), stringResource(R.string.settings_end_action_hint),
+                PlaybackTuning.EndAction.entries.toList(), action, { context.getString(when (it) { PlaybackTuning.EndAction.PAUSE -> R.string.end_pause; PlaybackTuning.EndAction.NEXT -> R.string.end_next; PlaybackTuning.EndAction.LOOP -> R.string.end_loop }) },
+                { action = it; settings.playbackEndAction = it }, backLeft)
+        }
+
+        SettingsItem.SKIP_OFFICIAL_INTRO_OUTRO -> {
+            var enabled by remember { mutableStateOf(settings.skipOfficialIntroOutro) }
+            ToggleRow(stringResource(R.string.settings_official_skip), stringResource(R.string.settings_official_skip_hint),
+                enabled, { enabled = it; settings.skipOfficialIntroOutro = it }, backLeft)
+        }
 
         SettingsItem.DETAIL_PAGE -> ToggleRow(
-            title = "视频详情页",
-            desc = "开：点视频卡先进介绍页（封面 / 简介 / 选集）；关（默认）：直接进播放。" +
-                    "番剧和影视不受影响，仍需选集",
+            title = stringResource(R.string.settings_detail_page),
+            desc = stringResource(R.string.settings_detail_page_hint),
             on = detailPage,
             onToggle = onDetailPage,
             modifier = backLeft,
         )
 
+        SettingsItem.RETURN_DETAILS -> {
+            var enabled by remember { mutableStateOf(settings.returnDetailsOnExit) }
+            ToggleRow(stringResource(R.string.settings_return_details), stringResource(R.string.settings_return_details_hint),
+                enabled, { enabled = it; settings.returnDetailsOnExit = it }, backLeft)
+        }
+        SettingsItem.RESUME_CHOICE -> {
+            var enabled by remember { mutableStateOf(settings.askResume) }
+            ToggleRow(stringResource(R.string.settings_ask_resume), stringResource(R.string.settings_ask_resume_hint),
+                enabled, { enabled = it; settings.askResume = it }, backLeft)
+        }
+
         SettingsItem.BACK_EXIT -> ToggleRow(
-            title = "单击返回键退出",
-            desc = "开：播放页按一次返回就退出；关（默认）：第一次按只出提示，再按一次才退。" +
-                    "无论开关如何，控制栏开着时按返回都只收起控制栏",
+            title = stringResource(R.string.settings_back_exit),
+            desc = stringResource(R.string.settings_back_exit_hint),
             on = singleBackExit,
             onToggle = onSingleBackExit,
             modifier = backLeft,
         )
 
-        SettingsItem.PLAYER_UP_KEY, SettingsItem.PLAYER_DOWN_KEY -> {
-            val up = item == SettingsItem.PLAYER_UP_KEY
-            var enabled by remember { mutableStateOf(if (up) settings.playerUpEnabled else settings.playerDownEnabled) }
-            var action by remember { mutableStateOf(if (up) settings.playerUpAction else settings.playerDownAction) }
-            val keyName = if (up) "上键" else "下键"
-            Column {
-                ToggleRow("播放时${keyName}侧栏", "控制条隐藏时生效；返回或关闭按钮回到播放", enabled, {
-                    enabled = it
-                    if (up) settings.playerUpEnabled = it else settings.playerDownEnabled = it
-                }, backLeft)
-                ChoiceRow("${keyName}内容", null, PlaybackTuning.SideAction.entries.toList(), action, { it.label }, {
-                    action = it
-                    if (up) settings.playerUpAction = it else settings.playerDownAction = it
-                }, backLeft)
-            }
-        }
-
         // ============================================================ 高级
 
         SettingsItem.ADVANCED_SWITCH -> ToggleRow(
-            title = "高级模式",
-            desc = "打开后可调跳过类别、播放默认值，并显示「解码与线路」「存储与日志」",
+            title = stringResource(R.string.setting_advanced),
+            desc = stringResource(R.string.settings_advanced_hint),
             on = advanced,
             onToggle = onAdvanced,
             modifier = backLeft,
@@ -310,11 +373,16 @@ fun itemBody(
 
         // ============================================================ 调优 · 解码
 
+        SettingsItem.PLAYBACK_STATS -> {
+            var enabled by remember { mutableStateOf(settings.showPlaybackStats) }
+            ToggleRow(stringResource(R.string.settings_stats), stringResource(R.string.settings_stats_hint),
+                enabled, { enabled = it; settings.showPlaybackStats = it }, backLeft)
+        }
+
         SettingsItem.FORCE_AVC -> ToggleRow(
             // 消费者：PlayerScreen.pickSelection → StreamSelector(onlyAvc = forceAvc)
-            title = "只用 AVC（兼容模式）",
-            desc = "完全不用 HEVC。黑屏 / 有声音没画面的机器打开这个能直接绕过，" +
-                    "代价是同清晰度码率更高一点",
+            title = stringResource(R.string.settings_avc),
+            desc = stringResource(R.string.settings_avc_hint),
             on = forceAvc,
             onToggle = onForceAvc,
             modifier = backLeft,
@@ -324,9 +392,8 @@ fun itemBody(
 
         SettingsItem.SKIP_P2P -> ToggleRow(
             // 消费者：PlayerScreen.startPlayback → BiliPlayer.play(skipP2p =) → CdnOrder.order
-            title = "跳过 P2P 加速节点",
-            desc = "P2P 节点在部分宽带 / 路由器下连不通，会白等一次超时。" +
-                    "只在起播总要卡一下的时候再开",
+            title = stringResource(R.string.settings_skip_p2p),
+            desc = stringResource(R.string.settings_skip_p2p_hint),
             on = skipP2p,
             onToggle = onSkipP2p,
             modifier = backLeft,
@@ -334,12 +401,11 @@ fun itemBody(
 
         SettingsItem.CDN_PREF -> ChoiceRow(
             // 消费者：BiliPlayer.candidates → PlayTolerance.orderByPreference
-            title = "指定 CDN",
-            desc = "把匹配到的镜像排到最前。「只是优先，不是只用」 —— " +
-                    "匹配不上时保持原样，不会让能播的视频变成不能播",
+            title = stringResource(R.string.settings_cdn),
+            desc = stringResource(R.string.settings_cdn_hint),
             options = CDN_PRESETS,
             selected = cdnPref,
-            labelOf = { it },
+            labelOf = { if (it == CDN_NONE) context.getString(R.string.cdn_default) else it },
             onSelect = onCdnPref,
             modifier = backLeft,
         )
@@ -348,9 +414,8 @@ fun itemBody(
 
         SettingsItem.RETRY_NO_P2P -> ToggleRow(
             // 消费者：PlayerScreen.onUnrecoverable → BiliPlayer.retryWithoutP2p
-            title = "卡住时自动换线路再试",
-            desc = "播不出来时把 P2P 节点全部去掉、原地重开一次。" +
-                    "它和上面那条「跳过 P2P」不是一回事：那个是「一开始就不用」，这个是「失败之后才用」",
+            title = stringResource(R.string.settings_retry_source),
+            desc = stringResource(R.string.settings_retry_source_hint),
             on = retryNoP2p,
             onToggle = onRetryNoP2p,
             modifier = backLeft,
@@ -360,13 +425,15 @@ fun itemBody(
             // 消费者：DecoderSelector.forStored → ExoPlayer.setMediaCodecSelector
             // ★ 落盘存的是英文 id（auto/software/vendor），界面显示中文标签。
             //   存文案的写法已经吃过一次亏（改个措辞用户的配置就丢了）。
-            title = "解码器",
-            desc = "让系统自己挑。只有「就某个编码起播崩、别的都正常」时才需要指定 —— " +
-                    "这里只给三档、不给手打解码器名，打错名字会让所有视频都放不了。当前：" +
-                    DecoderSelector.describe(decoder),
+            title = stringResource(R.string.settings_decoder),
+            desc = stringResource(R.string.settings_decoder_hint, context.getString(when (DecoderSelector.normalize(decoder)) {
+                DecoderSelector.SOFTWARE -> R.string.decoder_software_hint
+                DecoderSelector.VENDOR -> R.string.decoder_vendor_hint
+                else -> R.string.decoder_auto_hint
+            })),
             options = DECODER_IDS,
             selected = decoder,
-            labelOf = { DecoderSelector.label(it) },
+            labelOf = { context.getString(when (DecoderSelector.normalize(it)) { DecoderSelector.SOFTWARE -> R.string.decoder_software; DecoderSelector.VENDOR -> R.string.decoder_vendor; else -> R.string.value_auto }) },
             onSelect = onDecoder,
             modifier = backLeft,
         )
@@ -375,8 +442,8 @@ fun itemBody(
 
         SettingsItem.SPEED_DEFAULT -> ChoiceRow(
             // 消费者：PlayerViewModel.speedIndex 的初值（来自 settings.playbackSpeedIndex）
-            title = "默认倍速",
-            desc = "进播放页时的起始倍速。播放页那颗「倍速」按钮可以临时改，退出不保留",
+            title = stringResource(R.string.settings_speed),
+            desc = stringResource(R.string.settings_speed_hint),
             options = PlaybackTuning.SPEEDS.indices.toList(),
             selected = speedIndex,
             labelOf = { PlaybackTuning.speedLabel(it) },
@@ -386,12 +453,11 @@ fun itemBody(
 
         SettingsItem.ASPECT_DEFAULT -> ChoiceRow(
             // 消费者：PlayerScreen 的 PlayerView.resizeMode（经 resizeModeOf 翻译）
-            title = "默认画面比例",
-            desc = "「适应」留黑边但不变形；「拉伸」铺满但会变形（看老 4:3 片源用）；" +
-                    "「裁切」去黑边但会切掉画面边缘",
+            title = stringResource(R.string.settings_aspect),
+            desc = stringResource(R.string.settings_aspect_hint),
             options = PlaybackTuning.ASPECTS,
             selected = PlaybackTuning.aspectOf(aspectId),
-            labelOf = { it.label },
+            labelOf = { context.getString(when (it.id) { "fit" -> R.string.aspect_fit; "fill" -> R.string.aspect_fill; else -> R.string.aspect_crop }) },
             onSelect = { onAspectId(it.id) },
             modifier = backLeft,
         )
@@ -399,26 +465,30 @@ fun itemBody(
         // ============================================================ 存储
 
         SettingsItem.IMAGE_CACHE -> ActionRow(
-            title = "图片缓存",
-            desc = "封面缩略图，删掉只是下次要重新下。当前占用 " + formatBytes(cacheBytes),
-            actionLabel = "清理",
+            title = stringResource(R.string.settings_image_cache),
+            desc = stringResource(R.string.settings_image_cache_hint, formatBytes(cacheBytes)),
+            actionLabel = stringResource(R.string.action_clear),
             onAction = onClearCache,
             modifier = backLeft,
         )
 
-        SettingsItem.RUN_LOG -> ActionRow(
-            title = "运行日志",
-            desc = "排查问题时给的那份日志。清掉不影响使用",
-            actionLabel = "清空",
-            onAction = onClearLog,
-            modifier = backLeft,
-        )
+        SettingsItem.RUN_LOG -> {
+            var open by remember { mutableStateOf(false) }
+            ActionRow(title = stringResource(R.string.settings_logs), desc = stringResource(R.string.settings_logs_hint),
+                actionLabel = stringResource(R.string.action_view), onAction = { open = true }, modifier = backLeft)
+            if (open) Dialog(onDismissRequest = { open = false }) {
+                val logFocus = remember { FocusRequester() }
+                top.bilitv.ui.player.LogPanel(onClose = { open = false }, firstFocus = logFocus,
+                    modifier = Modifier.fillMaxWidth().fillMaxHeight(.85f))
+                top.bilitv.ui.components.RequestFocusOnAppear(logFocus, true)
+            }
+        }
 
         // ============================================================ 关于
 
         SettingsItem.ABOUT_VERSION -> InfoRow(
             title = stringResource(R.string.app_name),
-            desc = "第三方 B 站电视客户端。仅供自用",
+            desc = stringResource(R.string.settings_about_hint),
             value = appVersion,
         )
     }
@@ -473,7 +543,7 @@ private fun PickerBlock(
         )
         content()
         Text(
-            text = "↑↓ 逐个移动 · ←→ 调顺序 · OK 显示/隐藏 · 返回键回分类" +
+            text = stringResource(R.string.settings_order_hint) +
                 if (note.isEmpty()) "" else "\n$note",
             style = TextStyle(fontSize = AppType.Small),
             color = theme.textTertiary,

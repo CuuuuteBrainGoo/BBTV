@@ -1,8 +1,12 @@
 package top.bilitv.ui
 
+import top.bilitv.ui.theme.pageBackground
+
+import top.bilitv.ui.components.scrollWithScrollbar
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -55,11 +59,14 @@ import androidx.compose.material3.Icon
 import androidx.compose.foundation.layout.size
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.onKeyEvent
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.platform.LocalContext
 import top.bilitv.BiliTvApp
+import top.bilitv.R
+import androidx.compose.ui.res.stringResource
 import top.bilitv.data.settings.StartupFocus
 
 /**
@@ -93,15 +100,15 @@ import top.bilitv.data.settings.StartupFocus
  * 它仍然是一个页面，只是改成**二级页**（`Screen.Follow`，见 `Nav.kt`），
  * 从「我的」进去、按返回回来。侧栏因此从 9 项变 **8 项**。
  */
-enum class NavTab(val label: String) {
-    HOME("首页"),
-    CINEMA("影视"),
-    DYNAMIC("动态"),
-    HISTORY("历史"),
-    LIVE("直播"),
-    SEARCH("搜索"),
-    MINE("我的"),
-    SETTINGS("设置"),
+enum class NavTab(val labelRes: Int) {
+    HOME(R.string.nav_home),
+    CINEMA(R.string.nav_cinema),
+    DYNAMIC(R.string.nav_dynamic),
+    HISTORY(R.string.nav_history),
+    LIVE(R.string.nav_live),
+    SEARCH(R.string.nav_search),
+    MINE(R.string.nav_mine),
+    SETTINGS(R.string.nav_settings),
     ;
 
     fun startupFocus(requested: StartupFocus?): StartupFocus? =
@@ -234,7 +241,6 @@ fun AppShell(
 ) {
     val theme = AppTheme.current
     val settings = (LocalContext.current.applicationContext as BiliTvApp).settings
-    var showClock by remember { mutableStateOf(settings.showClock) }
 
     /*
      * 名字认不出来时回落到首页 —— 枚举改名/删项后老状态不会让用户卡在空白页。
@@ -254,11 +260,12 @@ fun AppShell(
     val tabState = rememberSaveableStateHolder()
     val navigationFocus = remember { NavigationFocus(tab.startupFocus(startupFocus)).apply {
         confirmTabs = settings.lowMemoryMode
+        rightToCards = settings.rightToCards
     } }
     DisposableEffect(settings) {
         val stop = settings.observeChanges {
-            showClock = settings.showClock
             navigationFocus.confirmTabs = settings.lowMemoryMode
+            navigationFocus.rightToCards = settings.rightToCards
         }
         onDispose { stop() }
     }
@@ -270,7 +277,7 @@ fun AppShell(
     Row(
         modifier = Modifier
             .fillMaxSize()
-            .background(theme.background)
+            .background(theme.pageBackground)
             /*
              * ★ 2026-09-30 少爷要求：**按遥控器菜单键刷新当前页**。
              *
@@ -287,12 +294,12 @@ fun AppShell(
             .onPreviewKeyEvent { e ->
                 // 用户已经开始操作，就不再让尚未完成的启动请求改动焦点。
                 if (e.type == KeyEventType.KeyDown) navigationFocus.pendingStartup = null
-                if (e.key == Key.Menu && e.type == KeyEventType.KeyUp) {
-                    RefreshBus.request()
-                    true
-                } else {
-                    false
-                }
+                false
+            }.onKeyEvent { e ->
+                // Bubble after the focused card has first refusal; refresh only real content consumers.
+                if (e.key == Key.Menu && e.type == KeyEventType.KeyUp && tab != NavTab.SETTINGS && !e.nativeKeyEvent.isCanceled) {
+                    RefreshBus.request(); true
+                } else false
             },
     ) {
         NavRail(
@@ -305,8 +312,6 @@ fun AppShell(
         )
 
         Box(modifier = Modifier.weight(1f).fillMaxHeight()) {
-            // 给时间留出独立一行，避免挡住长标签、筛选或管理按钮。
-            Box(Modifier.fillMaxSize().padding(top = if (showClock) 28.dp else 0.dp)) {
             /*
              * 每个 Tab 单独存状态。
              *
@@ -363,8 +368,6 @@ fun AppShell(
                      */
                 }
             }
-            }
-            if (showClock) InterfaceClock(Modifier.align(Alignment.TopEnd).padding(end = 20.dp, top = 4.dp))
         }
     }
 
@@ -430,6 +433,7 @@ private fun NavRail(
             .width(RAIL_WIDTH)
             .fillMaxHeight()
             .background(theme.navBackground)
+            .scrollWithScrollbar(rememberScrollState())
             /*
              * ★ 2026-09-30 实测修正：**9 项在 1080p 电视上会溢出屏幕**。
              *
@@ -465,7 +469,7 @@ private fun NavRail(
             val self = itemRequesters[index]
             NavItem(
                 icon = item.icon,
-                desc = item.label,
+                desc = stringResource(item.labelRes),
                 selected = isCurrent,
                 onClick = {
                     // 焦点留在侧栏上，别跳进内容区（少爷 2026-09-30）
@@ -474,6 +478,12 @@ private fun NavRail(
                 modifier = Modifier
                     .onFocusChanged {
                         if (it.isFocused && navigation?.pendingStartup == null && navigation?.confirmTabs == false && !isCurrent) onSelect(item)
+                    }
+                    .onPreviewKeyEvent { e ->
+                        if (e.key == Key.DirectionRight && navigation?.rightToCards == true && isCurrent && navigation.contentTarget != null) {
+                            if (e.type == KeyEventType.KeyDown) runCatching { navigation.contentTarget?.requestFocus() }.isSuccess
+                            else true
+                        } else false
                     }
                     .padding(horizontal = 8.dp)
                     /*
@@ -579,18 +589,10 @@ private fun NavItem(
      * ```
      * 三个状态靠**图标明度 + 焦点底色**区分，一个底色都不多给。
      */
-    val fill by animateColorAsState(
-        targetValue = if (focused) theme.focusFill else Color.Transparent,
-        label = "navItemFill",
-    )
-    val iconColor by animateColorAsState(
-        targetValue = when {
-            focused -> theme.primary
-            selected -> theme.textPrimary
-            else -> theme.navText
-        },
-        label = "navItemIcon",
-    )
+    val fillValue = if (focused) theme.focusFill else Color.Transparent
+    val fill = if (theme.animations) animateColorAsState(fillValue, label = "navItemFill").value else fillValue
+    val iconValue = when { focused -> theme.primary; selected -> theme.textPrimary; else -> theme.navText }
+    val iconColor = if (theme.animations) animateColorAsState(iconValue, label = "navItemIcon").value else iconValue
 
     Box(
         modifier = modifier

@@ -27,7 +27,7 @@ enum class ThemeSkin(
      * ② 低内存 + 遥控器 + 远距离观看这三个硬约束它全扛得住；
      * ③ 它是两套里唯一的"底座" —— 想更热闹，加大主色用量就是 [CLASSIC]。
      */
-    CINEMA("cinema", "影院", "近黑底、主色只给焦点、卡片大留白多"),
+    CINEMA("cinema", "影院（更黑的黑色，护眼）", "更深黑底、主色只给焦点、卡片大留白多"),
 
     /**
      * A · 经典 / 贴近官方。
@@ -39,6 +39,8 @@ enum class ThemeSkin(
      */
     CLASSIC("classic", "经典", "B 站粉大面积、一屏更多卡片、更接近官方观感"),
     PORNHUB("pornhub", "Pornhub 黄黑", "橙黄强调色、黑底、浅色文字"),
+    WECHAT("wechat", "Wechat 绿", "微信绿强调色，经典深灰底"),
+    ALIPAY("alipay", "Alipay 蓝", "支付宝蓝强调色，经典深灰底"),
     ;
 
     companion object {

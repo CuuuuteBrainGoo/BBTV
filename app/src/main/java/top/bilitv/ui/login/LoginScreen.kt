@@ -1,19 +1,24 @@
 package top.bilitv.ui.login
 
+import top.bilitv.ui.theme.pageBackground
+
 import android.app.Application
 import android.graphics.Bitmap
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -30,6 +35,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.res.stringResource
+import top.bilitv.R
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -41,11 +48,19 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.ensureActive
 import top.bilitv.BiliTvApp
 import top.bilitv.data.auth.RiskControl
 import top.bilitv.data.auth.TvLoginPoll
 import top.bilitv.data.auth.WebLogin
 import top.bilitv.ui.components.BackChip
+import top.bilitv.ui.components.FilledActionButton
+import top.bilitv.ui.components.scrollWithScrollbar
+import androidx.compose.foundation.rememberScrollState
 import top.bilitv.ui.theme.AppTheme
 import top.bilitv.ui.theme.AppType
 import top.bilitv.util.AppLog
@@ -80,6 +95,7 @@ fun LoginScreen(onBack: () -> Unit, onLoggedIn: () -> Unit) {
     val theme = AppTheme.current
 
     LaunchedEffect(Unit) { vm.start() }
+    DisposableEffect(vm) { onDispose { vm.stop() } }
 
     // 登录成功就自动退回去。
     // ★ 用 LaunchedEffect 而不是写在轮询里：轮询属于 VM，
@@ -93,23 +109,27 @@ fun LoginScreen(onBack: () -> Unit, onLoggedIn: () -> Unit) {
         }
     }
 
-    Box(modifier = Modifier.fillMaxSize().background(theme.background)) {
+    BoxWithConstraints(modifier = Modifier.fillMaxSize().background(theme.pageBackground)) {
+        val qrSize = (maxHeight * .45f).coerceIn(140.dp, 280.dp)
         Column(
             modifier = Modifier
                 .align(Alignment.Center)
-                .padding(horizontal = 60.dp),
+                .fillMaxWidth().padding(top = 58.dp, bottom = 14.dp)
+                .scrollWithScrollbar(rememberScrollState())
+                .padding(horizontal = 20.dp, vertical = 16.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.spacedBy(18.dp),
         ) {
             Text(
-                text = "扫码登录",
+                text = stringResource(R.string.login_title),
                 style = TextStyle(fontSize = AppType.Jumbo, fontWeight = FontWeight.Bold),
                 color = theme.textPrimary,
+                textAlign = TextAlign.Center,
             )
 
             Box(
                 modifier = Modifier
-                    .size(QR_SIZE)
+                    .size(qrSize)
                     .clip(RoundedCornerShape(10.dp))
                     .background(Color.White),
                 contentAlignment = Alignment.Center,
@@ -117,14 +137,14 @@ fun LoginScreen(onBack: () -> Unit, onLoggedIn: () -> Unit) {
                 val bitmap = vm.qrBitmap
                 when {
                     vm.state is LoginState.Success -> Text(
-                        text = "登录成功",
+                        text = stringResource(R.string.login_success),
                         style = TextStyle(fontSize = AppType.H3, fontWeight = FontWeight.Bold),
                         color = Color(0xFF1A1A1A),
                     )
 
                     bitmap != null -> Image(
                         bitmap = bitmap.asImageBitmap(),
-                        contentDescription = "登录二维码",
+                        contentDescription = stringResource(R.string.login_qr_description),
                         contentScale = ContentScale.Fit,
                         modifier = Modifier.fillMaxSize().padding(10.dp),
                     )
@@ -134,7 +154,13 @@ fun LoginScreen(onBack: () -> Unit, onLoggedIn: () -> Unit) {
             }
 
             Text(
-                text = vm.state.hint,
+                text = when (val state = vm.state) {
+                    LoginState.Loading -> stringResource(R.string.login_loading)
+                    LoginState.Waiting -> stringResource(R.string.login_waiting)
+                    LoginState.Scanned -> stringResource(R.string.login_scanned)
+                    LoginState.Success -> stringResource(R.string.login_success)
+                    is LoginState.Failed -> state.hint
+                },
                 style = TextStyle(fontSize = AppType.Body1, fontWeight = FontWeight.Medium),
                 color = if (vm.state is LoginState.Scanned) theme.primary else theme.textSecondary,
                 textAlign = TextAlign.Center,
@@ -142,12 +168,8 @@ fun LoginScreen(onBack: () -> Unit, onLoggedIn: () -> Unit) {
 
             // 失败态才给一个可操作的东西。其它状态重试没有意义（码还在轮询）。
             if (vm.state is LoginState.Failed) {
-                BackChip(onBack = { vm.start() }, modifier = Modifier.padding(top = 4.dp))
-                Text(
-                    text = "重新获取二维码",
-                    style = TextStyle(fontSize = AppType.Meta),
-                    color = theme.textTertiary,
-                )
+                FilledActionButton(stringResource(R.string.login_retry), vm::start,
+                    modifier = Modifier.padding(top = 4.dp))
             }
         }
 
@@ -158,29 +180,13 @@ fun LoginScreen(onBack: () -> Unit, onLoggedIn: () -> Unit) {
     }
 }
 
-private val QR_SIZE = 280.dp
-
-/** 登录界面的状态。`hint` 是直接显示给用户的那句话。 */
+/** Static labels belong to the UI resources; only failures carry a message. */
 sealed interface LoginState {
-    val hint: String
-
-    data object Loading : LoginState {
-        override val hint = "正在获取二维码…"
-    }
-
-    data object Waiting : LoginState {
-        override val hint = "打开 B 站手机客户端，扫一扫这个二维码"
-    }
-
-    data object Scanned : LoginState {
-        override val hint = "已扫到，请在手机上点「确认登录」"
-    }
-
-    data object Success : LoginState {
-        override val hint = "登录成功"
-    }
-
-    data class Failed(override val hint: String) : LoginState
+    data object Loading : LoginState
+    data object Waiting : LoginState
+    data object Scanned : LoginState
+    data object Success : LoginState
+    data class Failed(val hint: String) : LoginState
 }
 
 class LoginViewModel(app: Application) : AndroidViewModel(app) {
@@ -192,15 +198,20 @@ class LoginViewModel(app: Application) : AndroidViewModel(app) {
     var qrBitmap by mutableStateOf<Bitmap?>(null)
         private set
 
-    /** 防止重复启动（进页面 + 失败重试都会调 [start]）。 */
-    private var running = false
+    private var requestJob: Job? = null
+    private var generation = 0
+
+    fun stop() {
+        ++generation; requestJob?.cancel(); requestJob = null
+        qrBitmap = null; state = LoginState.Loading
+    }
 
     fun start() {
-        if (running) return
-        running = true
-        viewModelScope.launch {
-            state = LoginState.Loading
-            qrBitmap = null
+        if (requestJob?.isActive == true) return
+        val g = ++generation
+        state = LoginState.Loading; qrBitmap = null
+        requestJob = viewModelScope.launch {
+            try {
 
             /*
              * ★ 优先走**网页端**扫码（2026-09-29 改造）。
@@ -219,10 +230,15 @@ class LoginViewModel(app: Application) : AndroidViewModel(app) {
                 AppLog.w("Login", "网页端登录未走通，回退到 TV 端扫码")
                 runTvLogin()
             }
-            if (state !is LoginState.Success) {
-                state = LoginState.Failed("二维码多次过期，点下面的按钮重新获取")
+            if (state !is LoginState.Success && state !is LoginState.Failed) {
+                state = LoginState.Failed(graph.getString(R.string.login_expired))
             }
-            running = false
+            } catch (e: CancellationException) { throw e }
+            catch (e: Exception) { if (g == generation) {
+                state = LoginState.Failed(graph.getString(R.string.login_network_error))
+                AppLog.w("Login", e.javaClass.simpleName)
+            } }
+            finally { if (g == generation) requestJob = null }
         }
     }
 
@@ -239,12 +255,15 @@ class LoginViewModel(app: Application) : AndroidViewModel(app) {
         var issued = 0
         while (currentCoroutineContext().isActive && issued < MAX_QR && state !is LoginState.Success) {
             val session = graph.api.webQrSession()
+            currentCoroutineContext().ensureActive()
             if (session == null) {
                 AppLog.w("Login", "网页端拿不到二维码")
                 return false
             }
             issued++
-            qrBitmap = renderQr(session.url)
+            qrBitmap = withContext(Dispatchers.Default) { renderQr(session.url) }
+            currentCoroutineContext().ensureActive()
+            if (qrBitmap == null) { state = LoginState.Failed(graph.getString(R.string.login_qr_error)); return true }
             state = LoginState.Waiting
             AppLog.i("Login", "网页端已申请二维码（第 $issued 张）")
 
@@ -274,12 +293,15 @@ class LoginViewModel(app: Application) : AndroidViewModel(app) {
         var issued = 0
         while (currentCoroutineContext().isActive && issued < MAX_QR && state !is LoginState.Success) {
             val session = graph.api.tvQrSession()
+            currentCoroutineContext().ensureActive()
             if (session == null) {
-                state = LoginState.Failed("拿不到二维码，检查一下网络")
+                state = LoginState.Failed(graph.getString(R.string.login_network_error))
                 return
             }
             issued++
-            qrBitmap = renderQr(session.url)
+            qrBitmap = withContext(Dispatchers.Default) { renderQr(session.url) }
+            currentCoroutineContext().ensureActive()
+            if (qrBitmap == null) { state = LoginState.Failed(graph.getString(R.string.login_qr_error)); return }
             state = LoginState.Waiting
             AppLog.i("Login", "TV 端已申请二维码（第 $issued 张）")
 
@@ -295,7 +317,7 @@ class LoginViewModel(app: Application) : AndroidViewModel(app) {
                         state = LoginState.Waiting
                     }
                     is TvLoginPoll.Failed -> {
-                        state = LoginState.Failed("登录失败：${r.message}（code=${r.code}）")
+                        state = LoginState.Failed(graph.getString(R.string.login_failure, r.code))
                         return
                     }
                 }

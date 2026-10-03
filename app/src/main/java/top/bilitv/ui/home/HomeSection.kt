@@ -1,6 +1,7 @@
 package top.bilitv.ui.home
 
 import top.bilitv.data.model.PgcType
+import top.bilitv.R
 
 /**
  * 首页（以及未来的其它页面）能放上去的**内容分区**。
@@ -39,39 +40,38 @@ import top.bilitv.data.model.PgcType
  */
 enum class HomeSection(
     val id: String,
-    val label: String,
-    val emptyHint: String,
+    val labelRes: Int,
     val pageable: Boolean = true,
     val pgcType: PgcType? = null,
     val regionId: Int = 0,
 ) {
     // ---------------------------------------------------------------- UGC 信息流
 
-    RECOMMEND("recommend", "推荐", "推荐流为空 —— 接口可能变了或网络不通"),
-    POPULAR("popular", "热门", "热门为空 —— 接口可能变了或网络不通"),
+    RECOMMEND("recommend", R.string.section_recommend),
+    POPULAR("popular", R.string.section_popular),
 
     /**
      * 每周必看**不能翻页**：它是一期一期的固定名单（`popular/series/one`），
      * 没有"下一页"这个概念。硬给它加无限加载只会做出一个滚到底也不动的假动作。
      */
-    WEEKLY("weekly", "每周必看", "每周必看为空 —— 接口可能变了或网络不通", pageable = false),
+    WEEKLY("weekly", R.string.section_weekly, pageable = false),
 
     // ---------------------------------------------------------------- PGC 分类
 
-    BANGUMI("bangumi", "番剧", "番剧为空 —— 接口可能变了或网络不通", pgcType = PgcType.BANGUMI),
-    MOVIE("movie", "电影", "电影为空 —— 接口可能变了或网络不通", pgcType = PgcType.MOVIE),
-    TV("tv", "电视剧", "电视剧为空 —— 接口可能变了或网络不通", pgcType = PgcType.TV),
-    DOC("doc", "纪录片", "纪录片为空 —— 接口可能变了或网络不通", pgcType = PgcType.DOCUMENTARY),
-    GUOCHUANG("guochuang", "国创", "国创为空 —— 接口可能变了或网络不通", pgcType = PgcType.GUOCHUANG),
+    BANGUMI("bangumi", R.string.section_bangumi, pgcType = PgcType.BANGUMI),
+    MOVIE("movie", R.string.section_movie, pgcType = PgcType.MOVIE),
+    TV("tv", R.string.section_tv, pgcType = PgcType.TV),
+    DOC("doc", R.string.section_documentary, pgcType = PgcType.DOCUMENTARY),
+    GUOCHUANG("guochuang", R.string.section_guochuang, pgcType = PgcType.GUOCHUANG),
 
     // ---------------------------------------------------------------- UGC 分区
 
-    ANIMATION("animation", "动画", "动画区为空 —— 接口可能变了或网络不通", regionId = 1),
-    MUSIC("music", "音乐", "音乐区为空 —— 接口可能变了或网络不通", regionId = 3),
-    DANCE("dance", "舞蹈", "舞蹈区为空 —— 接口可能变了或网络不通", regionId = 129),
-    GAME("game", "游戏", "游戏区为空 —— 接口可能变了或网络不通", regionId = 4),
-    KNOWLEDGE("knowledge", "知识", "知识区为空 —— 接口可能变了或网络不通", regionId = 36),
-    TECH("tech", "科技", "科技区为空 —— 接口可能变了或网络不通", regionId = 188),
+    ANIMATION("animation", R.string.section_animation, regionId = 1),
+    MUSIC("music", R.string.section_music, regionId = 3),
+    DANCE("dance", R.string.section_dance, regionId = 129),
+    GAME("game", R.string.section_game, regionId = 4),
+    KNOWLEDGE("knowledge", R.string.section_knowledge, regionId = 36),
+    TECH("tech", R.string.section_tech, regionId = 188),
 
     /**
      * ⚠️ **它叫"运动"，不叫"体育"。**
@@ -80,9 +80,9 @@ enum class HomeSection(
      * 少爷说的是"体育"，但那是个口语说法 —— 界面上显示"运动"是为了和 B 站一致，
      * 少一层"用户看到的词 ↔ 接口要的值"的对不上的映射（那种映射迟早有人写反）。
      */
-    SPORT("sport", "运动", "运动区为空 —— 接口可能变了或网络不通", regionId = 234),
-    FOOD("food", "美食", "美食区为空 —— 接口可能变了或网络不通", regionId = 211),
-    CAR("car", "汽车", "汽车区为空 —— 接口可能变了或网络不通", regionId = 223),
+    SPORT("sport", R.string.section_sport, regionId = 234),
+    FOOD("food", R.string.section_food, regionId = 211),
+    CAR("car", R.string.section_car, regionId = 223),
     ;
 
     companion object {
@@ -118,7 +118,7 @@ enum class HomeSection(
          */
         fun parse(ids: List<String>): List<HomeSection> {
             val list = ids.mapNotNull { byId(it) }.distinct()
-            return list.ifEmpty { DEFAULT }
+            return if (list.isEmpty()) DEFAULT else list + listOf(RECOMMEND, POPULAR).filterNot { it in list }
         }
     }
 }

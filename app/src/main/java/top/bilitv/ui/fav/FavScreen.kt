@@ -1,5 +1,8 @@
 package top.bilitv.ui.fav
 
+import top.bilitv.ui.theme.pageBackground
+
+import top.bilitv.ui.components.verticalScrollbar
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -10,7 +13,6 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items as gridItems
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
@@ -18,6 +20,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -38,6 +41,10 @@ import top.bilitv.ui.components.BackChip
 import top.bilitv.ui.components.FeedCard
 import top.bilitv.ui.components.RequestFocusOnAppear
 import top.bilitv.ui.components.focusRing
+import top.bilitv.ui.theme.gridCells
+import androidx.compose.foundation.lazy.grid.GridItemSpan
+import top.bilitv.ui.components.LoadFeedback
+import top.bilitv.ui.theme.nearEnd
 import top.bilitv.ui.theme.AppTheme
 import top.bilitv.ui.theme.AppType
 
@@ -62,6 +69,7 @@ fun FavScreen(onBack: () -> Unit, onOpenVideo: (String, Long, String) -> Unit, o
     val theme = AppTheme.current
 
     LaunchedEffect(Unit) { vm.load() }
+    DisposableEffect(vm) { onDispose { vm.stopLoading() } }
 
     var focusKick by remember { mutableIntStateOf(0) }
     val firstFocus = remember { FocusRequester() }
@@ -69,7 +77,7 @@ fun FavScreen(onBack: () -> Unit, onOpenVideo: (String, Long, String) -> Unit, o
     // 换层（夹列表 ↔ 夹内）时把焦点送回第一项 —— 否则焦点会留在已经不存在的那一项上
     LaunchedEffect(vm.state) { focusKick++ }
 
-    Column(modifier = Modifier.fillMaxSize().background(theme.background)) {
+    Column(modifier = Modifier.fillMaxSize().background(theme.pageBackground)) {
         BackChip(
             // 在夹内按「返回」先退回夹列表，再按才退出整页 —— 和用户的心理模型一致
             onBack = { if (vm.opened != null) vm.backToFolders() else onBack() },
@@ -152,9 +160,9 @@ fun FavScreen(onBack: () -> Unit, onOpenVideo: (String, Long, String) -> Unit, o
 
                 FavState.ITEMS -> if (vm.items.isEmpty()) {
                     FavNotice(
-                        text = "这个收藏夹是空的",
-                        actionLabel = "返回收藏夹",
-                        onAction = { vm.backToFolders() },
+                        text = if (vm.loadingMore) "正在加载收藏视频…" else vm.error ?: if (vm.hasMore) "这一页没有可播放的视频，可继续加载" else "没有可播放的收藏视频",
+                        actionLabel = if (vm.loadingMore) "加载中" else if (vm.error != null) "重新加载" else if (vm.hasMore) "加载更多" else "返回收藏夹",
+                        onAction = { if (vm.error != null) vm.retry() else if (vm.hasMore) vm.loadMore() else vm.backToFolders() },
                         requester = firstFocus,
                     )
                 } else {
@@ -174,8 +182,9 @@ private fun FolderList(
     onOpen: (FavFolder) -> Unit,
 ) {
     val theme = AppTheme.current
-    LazyColumn(
-        modifier = Modifier.fillMaxSize(),
+    val listState = androidx.compose.foundation.lazy.rememberLazyListState()
+    LazyColumn(state = listState,
+        modifier = Modifier.fillMaxSize().verticalScrollbar(listState),
         contentPadding = PaddingValues(
             start = theme.screenPadding, end = theme.screenPadding,
             top = 14.dp, bottom = 40.dp,
@@ -224,17 +233,17 @@ private fun ItemGrid(
 
     // 往下滚加载下一批。和首页同一套做法（用 snapshotFlow 观察最后可见下标）。
     LaunchedEffect(gridState, vm.items.size) {
-        snapshotFlow { gridState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: -1 }
-            .collect { last -> if (last >= vm.items.size - 8) vm.loadMore() }
+        snapshotFlow { gridState.layoutInfo.nearEnd(vm.items.size) }
+            .collect { near -> if (near) vm.loadMore() }
     }
 
     LazyVerticalGrid(
-        columns = GridCells.Fixed(theme.cardColumns),
+        columns = theme.gridCells(),
         state = gridState,
         contentPadding = PaddingValues(theme.screenPadding),
         horizontalArrangement = Arrangement.spacedBy(theme.cardGap),
         verticalArrangement = Arrangement.spacedBy(theme.rowGap),
-        modifier = Modifier.fillMaxSize(),
+        modifier = Modifier.fillMaxSize().verticalScrollbar(gridState),
     ) {
         gridItems(vm.items, key = { it.bvid }) { item ->
             FeedCard(
@@ -243,6 +252,14 @@ private fun ItemGrid(
                 modifier = Modifier.fillMaxWidth(),
                 focusRequester = requester.takeIf { item.bvid == vm.items.firstOrNull()?.bvid },
             )
+        }
+        if (vm.loadingMore || vm.error != null) item(span = { GridItemSpan(maxLineSpan) }) {
+            LoadFeedback(vm.loadingMore, vm.error, vm::retry)
+        }
+        else if (vm.hasMore) item(span = { GridItemSpan(maxLineSpan) }) {
+            Row(Modifier.fillMaxWidth().focusRing(contentDescription = "加载更多收藏", onClick = vm::loadMore).padding(16.dp)) {
+                Text("加载更多", color = theme.textPrimary)
+            }
         }
     }
 }

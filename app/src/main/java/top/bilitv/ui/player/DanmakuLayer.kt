@@ -30,6 +30,7 @@ import androidx.compose.ui.unit.sp
 import top.bilitv.data.danmaku.DanmakuItem
 import top.bilitv.data.danmaku.window
 import top.bilitv.util.AppLog
+import top.bilitv.data.settings.PlaybackPerformance
 import kotlin.math.max
 import kotlin.math.min
 
@@ -73,10 +74,11 @@ fun DanmakuLayer(
     outlineWidth: Float = 2f,
     outlineMinAlpha: Int = 180,
     trackHeight: Float = 1.4f,
+    performance: PlaybackPerformance = PlaybackPerformance.BALANCED,
 ) {
     if (!enabled) return
 
-    val textMeasurer = rememberTextMeasurer(cacheSize = 512)
+    val textMeasurer = rememberTextMeasurer(cacheSize = performance.textCache)
     val engine = remember { DanmakuEngine<ComposeLayout>() }
     var viewport by remember { mutableStateOf(IntSize.Zero) }
 
@@ -100,9 +102,9 @@ fun DanmakuLayer(
 
     val posState = remember { mutableLongStateOf(0L) }
     val advanced = remember(items) { items.filter { it.advanced != null } }
-    val advancedLayouts = remember(scale) {
-        object : LinkedHashMap<DanmakuItem, AdvancedLayout>(MAX_ACTIVE, .75f, true) {
-            override fun removeEldestEntry(eldest: MutableMap.MutableEntry<DanmakuItem, AdvancedLayout>): Boolean = size > MAX_ACTIVE
+    val advancedLayouts = remember(scale, performance) {
+        object : LinkedHashMap<DanmakuItem, AdvancedLayout>(performance.danmakuLimit, .75f, true) {
+            override fun removeEldestEntry(eldest: MutableMap.MutableEntry<DanmakuItem, AdvancedLayout>): Boolean = size > performance.danmakuLimit
         }
     }
     LaunchedEffect(scale, maxLines, scrollDurationMs, merge, areaFifths, trackHeight, overlap) { engine.clear() }
@@ -113,7 +115,7 @@ fun DanmakuLayer(
 
     LaunchedEffect(
         enabled, playing, viewport.width, viewport.height, lineHeightPx, maxLines, scale,
-        scrollDurationMs, merge, areaFifths, trackHeight, overlap,
+        scrollDurationMs, merge, areaFifths, trackHeight, overlap, performance,
     ) {
         if (!enabled || viewport.width <= 0 || lineHeightPx <= 0) return@LaunchedEffect
 
@@ -181,6 +183,7 @@ fun DanmakuLayer(
                 scrollDurationMs = scrollDurationMs,
                 merge = merge,
                 overlap = overlap,
+                maxActive = performance.danmakuLimit,
                 measure = measure,
             )
             // 3 秒最多打一条：这条日志是踩坑换来的 —— 靠肉眼看画面分不清
@@ -201,8 +204,11 @@ fun DanmakuLayer(
             tick(System.nanoTime())
             return@LaunchedEffect
         }
+        var drawnAt = 0L
         while (true) {
-            withFrameNanos { tick(it) }
+            withFrameNanos {
+                if (performance.drawFrame(drawnAt, it)) { tick(it); drawnAt = it }
+            }
         }
     }
 
@@ -248,7 +254,7 @@ fun DanmakuLayer(
         }
         // ponytail: 超密集高级弹幕最多检查最近 180 个候选，缓存同样有界；不预排版全片。
         val candidates = advanced.window((p-60_000L).coerceAtLeast(0L), p)
-        for (i in maxOf(0, candidates.size-MAX_ACTIVE) until candidates.size) {
+        for (i in maxOf(0, candidates.size-performance.danmakuLimit) until candidates.size) {
             val item = candidates[i]
             if (p-item.timeMs > item.advanced!!.durationMs) continue
             val record = advancedLayouts.getOrPut(item) {
@@ -442,6 +448,7 @@ internal class DanmakuEngine<T : DanmakuLayout> {
         merge: Boolean,
         overlap: Boolean = false,
         measure: (DanmakuItem, String) -> T,
+        maxActive: Int = MAX_ACTIVE,
     ) {
         if (viewW <= 0 || viewH <= 0 || lineH <= 0) return
 
@@ -451,7 +458,8 @@ internal class DanmakuEngine<T : DanmakuLayout> {
         lastPos = posMs
 
         active.removeAll { posMs - it.startMs > it.durationMs }
-        if (active.size >= MAX_ACTIVE) return
+        val limit = maxActive.coerceIn(1, MAX_ACTIVE)
+        if (active.size >= limit) return
 
         val lineCount = max(1, viewH / lineH)
         val laneLimit = if (maxLines > 0) min(maxLines, lineCount) else lineCount
@@ -459,7 +467,7 @@ internal class DanmakuEngine<T : DanmakuLayout> {
         if (fresh.isEmpty()) return
 
         for (item in fresh) {
-            if (active.size >= MAX_ACTIVE) break
+            if (active.size >= limit) break
             if (!item.isRenderable) continue
             if (item.interaction && active.any { it.item.interaction }) continue
 

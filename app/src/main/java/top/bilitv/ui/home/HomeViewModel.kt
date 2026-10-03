@@ -8,7 +8,12 @@ import androidx.compose.runtime.setValue
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import top.bilitv.BiliTvApp
+import top.bilitv.R
 import top.bilitv.data.model.FeedItem
 import top.bilitv.data.model.toFeedItem
 import top.bilitv.util.AppLog
@@ -45,6 +50,16 @@ import top.bilitv.util.AppLog
 class HomeViewModel(app: Application) : AndroidViewModel(app) {
 
     private val graph = app as BiliTvApp
+    val autoRefresh: Boolean get() = graph.settings.autoRefresh
+    private var recommendPolicy = graph.settings.recommendSource to graph.settings.personalizedRecommendations
+    var recommendNotice by mutableStateOf<String?>(null)
+        private set
+    val canBacktrack: Boolean get() = section == HomeSection.RECOMMEND && graph.settings.showRecommendBacktrack && previous != null
+    private var previous by mutableStateOf<RecommendationSnapshot?>(null)
+    var restoredViewport by mutableStateOf<HomeViewport?>(null)
+        private set
+    var restoreCount by mutableIntStateOf(0)
+        private set
 
     /** 用户配置的分区（顺序即显示顺序）。 */
     var sections by mutableStateOf(HomeSection.parse(graph.settings.homeSections))
@@ -84,7 +99,10 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
     /** 真分页的页码（热门 / UGC 分区 / PGC 分类共用这一个）。 */
     private var page = 1
 
-    private var hasMore = true
+    var hasMore by mutableStateOf(true); private set
+    private var initialized = false
+    val needsFirstPage: Boolean get() = !initialized
+    private var requestJob: Job? = null
 
     /**
      * 请求代数。**防止乱序覆盖**：切分区/刷新会 +1，
@@ -92,6 +110,13 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
      */
     private var gen = 0
     private var inFlight = false
+    private var failedMore = false
+
+    fun stopLoading() {
+        gen++
+        requestJob?.cancel(); requestJob = null
+        loading = false; loadingMore = false; inFlight = false
+    }
 
     // ------------------------------------------------------------------ 对外动作
 
@@ -101,39 +126,62 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
      * 界面每次**重新进入组合**时调（切走再切回来）—— 用户在设置页改了分区，
      * 回来就该看到新的。VM 本身活得比页面久，所以不能只在构造时读一次。
      */
-    fun syncSections() {
-        val next = HomeSection.parse(graph.settings.homeSections)
-        if (next == sections) return
-        sections = next
-        // 当前分区被关掉了 → 回到第一个
-        if (section !in next) {
-            section = next.first()
-            refresh()
+    fun syncSections(): Boolean {
+        if (!graph.settings.showRecommendBacktrack) previous = null
+        val policy = graph.settings.recommendSource to graph.settings.personalizedRecommendations
+        val changed = policy != recommendPolicy && section == HomeSection.RECOMMEND
+        if (policy != recommendPolicy) {
+            recommendPolicy = policy; previous = null; recommendNotice = null
+            if (changed) items = emptyList()
         }
+        val next = HomeSection.parse(graph.settings.homeSections)
+        var hidden = false
+        if (next != sections) {
+            sections = next
+            if (section !in next) {
+                stopLoading(); section = next.first(); initialized = false
+                items = emptyList(); previous = null; recommendNotice = null
+                hidden = true
+            }
+        }
+        return changed || hidden
     }
 
     /** 切到某个分区。**每次都重新加载**（不做跨分区缓存）。 */
     fun show(next: HomeSection) {
+        if (next != section) { items = emptyList(); initialized = false; previous = null; restoredViewport = null; recommendNotice = null }
         section = next
         refresh()
     }
 
     /** 重新推荐一批 / 重新拉这一页。 */
-    fun refresh() {
-        val g = ++gen
+    fun refresh(viewport: HomeViewport = HomeViewport()) {
+        val prior = if (graph.settings.showRecommendBacktrack && section == HomeSection.RECOMMEND && items.isNotEmpty())
+            RecommendationSnapshot(items, page, hasMore, error, failedMore, viewport, recommendNotice) else null
+        stopLoading()
+        val g = gen
         inFlight = true
         loading = true
         loadingMore = false
-        viewModelScope.launch {
-            val result = load(section, first = true)
-            if (g != gen) return@launch          // 这次请求已经过期
-            items = result
-            hasMore = section.pageable && result.isNotEmpty()
-            error = if (result.isEmpty()) section.emptyHint else null
-            loading = false
-            inFlight = false
-            refreshCount++
-            AppLog.i("Home", "${section.label} 刷新 ${result.size} 条（hasMore=$hasMore）")
+        error = null; failedMore = false
+        val which = section; val index = recommendIdx + 1
+        requestJob = viewModelScope.launch {
+            try {
+                val result = load(which, 1, index)
+                currentCoroutineContext().ensureActive()
+                if (g != gen) return@launch
+                if (which == HomeSection.RECOMMEND) { if (result.items.isNotEmpty()) previous = prior; recommendNotice = result.notice }
+                items = result.items.distinctBy { it.identity() }
+                page = 1; recommendIdx = index
+                hasMore = which.pageable && (result.hasMore ?: result.items.isNotEmpty())
+                initialized = true
+                error = if (result.items.isEmpty() && !hasMore) graph.getString(R.string.home_empty, graph.getString(which.labelRes)) else null
+                refreshCount++
+                AppLog.i("Home", "${which.id} 刷新 ${result.items.size} 条（hasMore=$hasMore）")
+            } catch (e: CancellationException) { throw e }
+            catch (e: Exception) {
+                if (g == gen) { error = if (items.isEmpty()) "加载失败，请重试" else "加载失败，已保留现有内容，请重试"; AppLog.w("Home", e.javaClass.simpleName) }
+            } finally { if (g == gen) { loading = false; inFlight = false } }
         }
     }
 
@@ -143,62 +191,69 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
      * 可以放心连调 —— 这里有三道闸：正在飞、首屏还在加载、已经没有了。
      */
     fun loadMore() {
-        if (inFlight || loading || loadingMore || !hasMore) return
+        if (inFlight || loading || loadingMore || !hasMore || error != null) return
         val g = gen
         inFlight = true
         loadingMore = true
-        viewModelScope.launch {
-            val more = load(section, first = false)
-            if (g != gen) return@launch
-            if (more.isEmpty()) {
-                hasMore = false
-            } else {
-                // 去重：推荐流的相邻批次会重叠，不去重会让 LazyGrid 的 key 直接崩。
-                // PGC 没有 bvid，用 seasonId 当兜底 key。
+        val which = section; val nextPage = page + 1; val index = recommendIdx + 1
+        requestJob = viewModelScope.launch {
+            try {
+                val more = load(which, nextPage, index)
+                currentCoroutineContext().ensureActive()
+                if (g != gen) return@launch
+                if (which == HomeSection.RECOMMEND) recommendNotice = more.notice
+                hasMore = more.hasMore ?: more.items.isNotEmpty()
                 val seen = items.mapTo(HashSet()) { it.identity() }
-                items = items + more.filter { seen.add(it.identity()) }
-            }
-            loadingMore = false
-            inFlight = false
-            AppLog.i("Home", "${section.label} 追加 ${more.size} 条（累计 ${items.size}）")
+                items = items + more.items.filter { seen.add(it.identity()) }
+                page = nextPage; recommendIdx = index
+                AppLog.i("Home", "${which.id} 追加 ${more.items.size} 条（累计 ${items.size}）")
+            } catch (e: CancellationException) { throw e }
+            catch (e: Exception) {
+                if (g == gen) { failedMore = true; error = "加载更多失败，已有内容仍可观看，请重试"; AppLog.w("Home", e.javaClass.simpleName) }
+            } finally { if (g == gen) { loadingMore = false; inFlight = false } }
         }
     }
 
+    fun backtrack() {
+        if (!canBacktrack) return
+        val snapshot = previous ?: return
+        stopLoading() // Also closes the actual old network call.
+        items = snapshot.items; page = snapshot.page; hasMore = snapshot.hasMore
+        error = snapshot.error; failedMore = snapshot.failedMore; recommendNotice = snapshot.notice
+        loading = false; loadingMore = false; inFlight = false
+        previous = null; restoredViewport = snapshot.viewport; restoreCount++
+        // fresh_idx stays monotonic: restored recommendations are not a server-side page cursor.
+    }
+
+    fun retry() { if (failedMore) { error = null; loadMore() } else refresh() }
+
     // ------------------------------------------------------------------ 取数
 
-    private suspend fun load(which: HomeSection, first: Boolean): List<FeedItem> {
+    private suspend fun load(which: HomeSection, requestPage: Int, index: Int): top.bilitv.data.api.RecommendPage {
+        if (which == HomeSection.RECOMMEND) return graph.api.recommendPage(index, recommendPolicy.first, recommendPolicy.second)
+        if (which.pgcType != null) {
+            val result = graph.api.pgcIndexPage(which.pgcType, page = requestPage, ps = HOME_PAGE_SIZE)
+            return top.bilitv.data.api.RecommendPage(result.items.map { it.toFeedItem() }, hasMore = result.hasMore)
+        }
         val raw: List<FeedItem> = when {
-            which.pgcType != null -> {
-                page = if (first) 1 else page + 1
-                graph.api.pgcIndex(which.pgcType, page = page, ps = HOME_PAGE_SIZE)
-                    .map { it.toFeedItem() }
-            }
-
             which.regionId != 0 -> {
-                page = if (first) 1 else page + 1
-                graph.api.regionNewList(which.regionId, pn = page, ps = HOME_PAGE_SIZE)
-            }
-
-            which == HomeSection.RECOMMEND -> {
-                recommendIdx += 1
-                graph.api.feedRecommend(freshIdx = recommendIdx)
+                graph.api.regionNewList(which.regionId, pn = requestPage, ps = HOME_PAGE_SIZE, strict = true)
             }
 
             which == HomeSection.POPULAR -> {
-                page = if (first) 1 else page + 1
-                graph.api.popular(pn = page, ps = HOME_PAGE_SIZE)
+                graph.api.popular(pn = requestPage, ps = HOME_PAGE_SIZE, strict = true)
             }
 
             // 不能翻页；"追加"时直接返回空，让 loadMore 把 hasMore 置 false
-            else -> if (first) graph.api.weeklyOne() else emptyList()
+            else -> if (requestPage == 1) graph.api.weeklyOne(strict = true) else emptyList()
         }
         // 解析层已剔除 goto=ad 的卡片，这里只是留一道闸。
         // ⚠️ PGC 卡的 bvid 是空的（它走 seasonId），所以判据是"两个 id 至少有一个"
-        return if (graph.settings.filterUiAds) {
+        return top.bilitv.data.api.RecommendPage(if (graph.settings.filterUiAds) {
             raw.filter { it.bvid.isNotBlank() || it.seasonId > 0L }
         } else {
             raw
-        }
+        })
     }
 }
 
@@ -208,3 +263,9 @@ private fun FeedItem.identity(): String =
 
 /** 一页抓多少条。推荐流的页大小由接口自己定（它给 12），不在这里管。 */
 private const val HOME_PAGE_SIZE = 20
+
+/** One previous recommendation batch; bitmaps remain in the existing bounded image cache. */
+private data class RecommendationSnapshot(val items: List<FeedItem>, val page: Int, val hasMore: Boolean,
+    val error: String?, val failedMore: Boolean, val viewport: HomeViewport, val notice: String?)
+
+data class HomeViewport(val index: Int = 0, val offset: Int = 0, val focusedKey: String? = null)

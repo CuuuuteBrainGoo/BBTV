@@ -19,7 +19,7 @@ import top.bilitv.data.model.VideoPage
  * [CdnOrder] / [PlayTolerance]（也是纯逻辑 + 单测）。
  *
  * ## 两条铁律
- * 1. **只在列表里"往后走一格"**，到头返回 `null`（**绝不回绕**）
+ * 1. **只在列表里前后走一格**，到头返回 `null`（**绝不回绕**）
  * 2. **当前项认不出来就返回 `null`**（宁可停在原地，不要跳到错误的集）
  */
 object NextEpisode {
@@ -33,12 +33,9 @@ object NextEpisode {
      *
      * @return 下一集；已是最后一集 / 列表为空 / 当前项不在列表里 → `null`
      */
-    fun nextPgc(episodes: List<PgcEpisode>, currentEpId: Long): PgcEpisode? {
+    fun nextPgc(episodes: List<PgcEpisode>, currentEpId: Long, step: Int = 1): PgcEpisode? {
         if (episodes.isEmpty() || currentEpId <= 0L) return null
-        val i = episodes.indexOfFirst { it.epId == currentEpId }
-        // i == -1（当前项不在列表里）必须显式挡住 —— 否则 i+1 == 0 会跳回第一集
-        if (i < 0) return null
-        return episodes.getOrNull(i + 1)
+        return adjacent(episodes, step) { it.epId == currentEpId }
     }
 
     /**
@@ -49,10 +46,15 @@ object NextEpisode {
      *
      * @return 下一 P；已是最后一 P / 列表为空 / 当前项不在列表里 → `null`
      */
-    fun nextPage(pages: List<VideoPage>, currentCid: Long): VideoPage? {
+    fun nextPage(pages: List<VideoPage>, currentCid: Long, step: Int = 1): VideoPage? {
         if (pages.isEmpty() || currentCid <= 0L) return null
-        val i = pages.indexOfFirst { it.cid == currentCid }
-        if (i < 0) return null
-        return pages.getOrNull(i + 1)
+        return adjacent(pages, step) { it.cid == currentCid }
+    }
+
+    fun <T> adjacent(items: List<T>, step: Int, current: (T) -> Boolean): T? {
+        if (step != -1 && step != 1) return null
+        val index = items.indexOfFirst(current)
+        if (index < 0) return null
+        return items.getOrNull(index + step)
     }
 }

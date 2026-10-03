@@ -6,7 +6,7 @@ import org.junit.Test
 import top.bilitv.data.api.parsePgcIndex
 import top.bilitv.data.api.parsePopular
 import top.bilitv.data.api.parseRegionNewList
-import top.bilitv.data.api.parseSearchVideo
+import top.bilitv.data.api.parseSearchVideoPage
 import top.bilitv.data.api.parseWeeklyOne
 import top.bilitv.data.api.parseWeeklySeries
 import top.bilitv.ui.components.formatPubDate
@@ -185,7 +185,7 @@ class FeedParsersTest {
               {"type":"video","bvid":"","title":"没有bvid"}
             ]}}
         """.trimIndent()
-        val list = parseSearchVideo(json)
+        val list = parseSearchVideoPage(json, 1).items
         assertEquals(1, list.size)
         with(list[0]) {
             assertEquals("BV1xx411c7mD", bvid)
@@ -199,9 +199,9 @@ class FeedParsersTest {
 
     @Test
     fun 搜索_时长解析支持小时制() {
-        assertEquals(3723, top.bilitv.data.api.parseSearchVideo(
-            """{"code":0,"data":{"result":[{"type":"video","bvid":"BV1","duration":"1:02:03"}]}}"""
-        )[0].durationSec)
+        assertEquals(3723, parseSearchVideoPage(
+            """{"code":0,"data":{"result":[{"type":"video","bvid":"BV1","duration":"1:02:03"}]}}""", 1
+        ).items[0].durationSec)
     }
 
     // ------------------------------------------------------------ 时间显示

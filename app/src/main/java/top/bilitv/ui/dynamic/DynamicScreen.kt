@@ -1,9 +1,7 @@
 package top.bilitv.ui.dynamic
 
-import android.app.Application
+import top.bilitv.ui.components.verticalScrollbar
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -16,14 +14,15 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.lazy.grid.GridItemSpan
-import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Text
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.foundation.rememberScrollState
+import top.bilitv.ui.components.scrollWithScrollbar
+import androidx.compose.ui.res.stringResource
+import top.bilitv.R
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
@@ -33,38 +32,23 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.lifecycle.AndroidViewModel
-import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.compose.viewModel
-import coil.compose.AsyncImage
-import coil.request.ImageRequest
-import kotlinx.coroutines.launch
-import top.bilitv.BiliTvApp
 import top.bilitv.data.model.CODE_NOT_LOGGED_IN
 import top.bilitv.data.model.DynamicItem
-import top.bilitv.data.model.mergeDynamicItems
 import top.bilitv.ui.components.FilledActionButton
 import top.bilitv.ui.components.RequestFocusOnAppear
-import top.bilitv.ui.components.dynamicAuthorSuffix
-import top.bilitv.ui.components.dynamicStatLine
-import top.bilitv.ui.components.fixedScheme
-import top.bilitv.ui.components.focusRing
+import top.bilitv.ui.theme.gridCells
+import top.bilitv.ui.components.LoadFeedback
+import top.bilitv.ui.theme.nearEnd
 import top.bilitv.ui.theme.AppTheme
 import top.bilitv.ui.theme.AppType
-import top.bilitv.util.AppLog
-import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.itemsIndexed as gridItemsIndexed
 import top.bilitv.ui.components.FeedCard
@@ -136,6 +120,8 @@ fun DynamicScreen(
     val vm: DynamicViewModel = viewModel()
     val theme = AppTheme.current
     LaunchedEffect(Unit) { vm.load() }
+    DisposableEffect(vm) { onDispose { vm.stopLoading() } }
+    top.bilitv.ui.OnRefreshRequest { if (!vm.loading) vm.reload() }
 
     val firstRow = remember { FocusRequester() }
     val emptyButton = remember { FocusRequester() }
@@ -163,8 +149,7 @@ fun DynamicScreen(
     val shouldLoadMore by remember {
         derivedStateOf {
             val info = listState.layoutInfo
-            val last = info.visibleItemsInfo.lastOrNull()?.index ?: -1
-            info.totalItemsCount > 0 && last >= info.totalItemsCount - 3
+            info.totalItemsCount > 0 && info.nearEnd(info.totalItemsCount)
         }
     }
     // 把 `list.size` 放进 key：每次成功追加一页就重新判一次，
@@ -176,20 +161,29 @@ fun DynamicScreen(
 
         Box(modifier = Modifier.fillMaxSize()) {
             when {
-                vm.loading -> CircularProgressIndicator(Modifier.align(Alignment.Center))
+                vm.loading && list.isEmpty() -> CircularProgressIndicator(Modifier.align(Alignment.Center))
 
                 list.isEmpty() -> DynamicNotice(
                     state = vm.state,
-                    onAction = when (vm.state) {
-                        DynamicState.NEED_LOGIN, DynamicState.EXPIRED -> onNeedLogin
-                        DynamicState.ERROR -> { { vm.reload() } }
-                        else -> onGoHome
+                    olderAvailable = vm.hasMore && vm.state == DynamicState.READY,
+                    loadingMore = vm.loadingMore,
+                    failedPage = vm.moreError != null || vm.refreshError != null,
+                    onAction = {
+                        when {
+                            vm.state == DynamicState.NEED_LOGIN || vm.state == DynamicState.EXPIRED -> onNeedLogin()
+                            vm.refreshError != null || vm.state == DynamicState.ERROR -> vm.reload()
+                            vm.hasMore -> vm.loadMore()
+                            else -> onGoHome()
+                        }
                     },
-                    actionLabel = when (vm.state) {
-                        DynamicState.NEED_LOGIN -> "去登录"
-                        DynamicState.EXPIRED -> "重新登录"
-                        DynamicState.ERROR -> "重新加载"
-                        else -> "去首页看看"
+                    actionLabel = when {
+                        vm.loadingMore -> stringResource(R.string.loading)
+                        vm.state == DynamicState.NEED_LOGIN -> stringResource(R.string.action_sign_in)
+                        vm.state == DynamicState.EXPIRED -> stringResource(R.string.action_sign_in_again)
+                        vm.refreshError != null || vm.state == DynamicState.ERROR -> stringResource(R.string.action_reload)
+                        vm.moreError != null -> stringResource(R.string.dynamic_retry_older)
+                        vm.hasMore -> stringResource(R.string.dynamic_load_older)
+                        else -> stringResource(R.string.action_browse_home)
                     },
                     requester = emptyButton,
                 )
@@ -199,12 +193,12 @@ fun DynamicScreen(
                  * 所以从"一行一条的大行"改成**和首页同一个网格**（`FeedCard`）。
                  */
                 else -> LazyVerticalGrid(
-                    columns = GridCells.Fixed(theme.cardColumns),
+                    columns = theme.gridCells(),
                     state = listState,
                     contentPadding = PaddingValues(theme.screenPadding),
                     horizontalArrangement = Arrangement.spacedBy(theme.cardGap),
                     verticalArrangement = Arrangement.spacedBy(theme.rowGap),
-                    modifier = Modifier.fillMaxSize(),
+                    modifier = Modifier.fillMaxSize().verticalScrollbar(listState),
                 ) {
                     // 合并时已按稳定标识去重，追加旧动态时保留现有卡片与焦点。
                     gridItemsIndexed(list, key = { _, item -> item.id.ifBlank { item.bvid } }) { index, item ->
@@ -227,6 +221,7 @@ fun DynamicScreen(
                                 .padding(vertical = 22.dp),
                         ) {
                             when {
+                                vm.loading || vm.refreshError != null -> LoadFeedback(vm.loading, vm.refreshError, vm::reload)
                                 vm.loadingMore -> {
                                     CircularProgressIndicator(
                                         strokeWidth = 2.dp,
@@ -234,23 +229,23 @@ fun DynamicScreen(
                                     )
                                     Spacer(Modifier.width(10.dp))
                                     Text(
-                                        text = "正在取更多…",
+                                        text = stringResource(R.string.dynamic_loading_more),
                                         style = TextStyle(fontSize = AppType.Caption),
                                         color = theme0.textTertiary,
                                     )
                                 }
                                 vm.state == DynamicState.EXPIRED -> FilledActionButton(
-                                    text = "登录已过期，重新登录", onClick = onNeedLogin,
+                                    text = stringResource(R.string.dynamic_expired_action), onClick = onNeedLogin,
                                 )
                                 vm.moreError != null -> FilledActionButton(
-                                    text = "加载失败，重试更早动态", onClick = { vm.loadMore() },
+                                    text = stringResource(R.string.dynamic_older_failed_action), onClick = { vm.loadMore() },
                                 )
                                 vm.hasMore -> FilledActionButton(
-                                    text = "加载更早动态", onClick = { vm.loadMore() },
+                                    text = stringResource(R.string.dynamic_load_older), onClick = { vm.loadMore() },
                                 )
-                                // 条数少的时候不报"没有更多了" —— 那反而像个错误提示
+                                // 条数少的时候不报stringResource(R.string.end_of_list) —— 那反而像个错误提示
                                 !vm.hasMore && list.size >= 8 -> Text(
-                                    text = "没有更多了",
+                                    text = stringResource(R.string.end_of_list),
                                     style = TextStyle(fontSize = AppType.Caption),
                                     color = theme0.textTertiary,
                                 )
@@ -280,7 +275,7 @@ private fun DynamicHeader(loaded: Int, ready: Boolean) {
             ),
     ) {
         Text(
-            text = "动态",
+            text = stringResource(R.string.nav_dynamic),
             style = TextStyle(fontSize = AppType.H1, fontWeight = FontWeight.SemiBold),
             color = theme.textPrimary,
         )
@@ -293,9 +288,9 @@ private fun DynamicHeader(loaded: Int, ready: Boolean) {
          */
         Text(
             text = if (ready) {
-                "已加载 $loaded 条 · 只显示能播的，图文动态不在这里"
+                stringResource(R.string.dynamic_loaded, loaded)
             } else {
-                "关注的人发了什么能播的东西，都在这里"
+                stringResource(R.string.dynamic_header_hint)
             },
             style = TextStyle(fontSize = AppType.Caption),
             color = theme.textTertiary,
@@ -305,170 +300,14 @@ private fun DynamicHeader(loaded: Int, ready: Boolean) {
 }
 
 /**
- * 一条动态。
- *
- * 焦点态照 BT：垫一层半透明主色 + 主色描边，**不放大**。
- * 这一行有 180dp 高、横跨整个屏幕宽度，放大一圈两边都会被裁掉。
- */
-@Composable
-private fun DynamicRow(
-    item: DynamicItem,
-    onClick: () -> Unit,
-    modifier: Modifier = Modifier,
-    focusRequester: FocusRequester? = null,
-) {
-    val theme = AppTheme.current
-    val context = LocalContext.current
-
-    val suffix = dynamicAuthorSuffix(item)
-    val statLine = dynamicStatLine(item)
-    val desc = buildList {
-        add(item.ownerName)
-        if (suffix.isNotBlank()) add(suffix)
-        add(item.title)
-        if (item.caption.isNotBlank()) add(item.caption)
-        if (statLine.isNotBlank()) add(statLine)
-    }.joinToString("，")
-
-    Row(
-        modifier = modifier
-            // focusRequester 必须挂在 focusRing **之前**（它认的是后面最近的焦点目标）
-            .then(
-                if (focusRequester != null) Modifier.focusRequester(focusRequester) else Modifier
-            )
-            .focusRing(contentDescription = desc, onClick = onClick)
-            .padding(8.dp),
-    ) {
-        Box {
-            AsyncImage(
-                model = ImageRequest.Builder(context)
-                    .data(item.cover.fixedScheme())
-                    // 按实际显示尺寸解码，绝不原图解码（低内存的生命线）
-                    .size(THUMB_W, THUMB_H)
-                    .crossfade(true)
-                    .build(),
-                contentDescription = null,
-                contentScale = ContentScale.Crop,
-                modifier = Modifier
-                    .size(THUMB_W.dp, THUMB_H.dp)
-                    .clip(RoundedCornerShape(theme.cardCorner))
-                    .background(theme.surfaceHigh),
-            )
-
-            // 时长角标：接口没给就不画（不写 00:00）
-            if (item.durationText.isNotBlank()) {
-                Text(
-                    text = item.durationText,
-                    style = TextStyle(fontSize = AppType.Tiny),
-                    color = Color.White,
-                    modifier = Modifier
-                        .align(Alignment.BottomEnd)
-                        .padding(6.dp)
-                        .clip(RoundedCornerShape(4.dp))
-                        .background(Color.Black.copy(alpha = 0.66f))
-                        .padding(horizontal = 5.dp, vertical = 2.dp),
-                )
-            }
-
-            /*
-             * 「转发」角标。
-             *
-             * 为什么必须有：转发的作者是**转发者**，但视频是**原作者**的 ——
-             * 不标一下，用户会以为这个视频是转发者发的。
-             */
-            if (item.forwarded) {
-                Text(
-                    text = "转发",
-                    style = TextStyle(fontSize = AppType.Tiny, fontWeight = FontWeight.Medium),
-                    color = Color.White,
-                    modifier = Modifier
-                        .align(Alignment.TopStart)
-                        .padding(6.dp)
-                        .clip(RoundedCornerShape(4.dp))
-                        .background(theme.primary.copy(alpha = 0.88f))
-                        .padding(horizontal = 5.dp, vertical = 2.dp),
-                )
-            }
-        }
-
-        Spacer(Modifier.width(16.dp))
-
-        Column(modifier = Modifier.weight(1f)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                AsyncImage(
-                    model = ImageRequest.Builder(context)
-                        .data(item.ownerFace.fixedScheme())
-                        .size(AVATAR_PX, AVATAR_PX)
-                        .crossfade(true)
-                        .build(),
-                    contentDescription = null,
-                    contentScale = ContentScale.Crop,
-                    modifier = Modifier
-                        .size(AVATAR)
-                        .clip(CircleShape)
-                        .background(theme.surfaceHigh),
-                )
-                Spacer(Modifier.width(8.dp))
-                Text(
-                    text = item.ownerName,
-                    style = TextStyle(fontSize = AppType.Meta, fontWeight = FontWeight.Medium),
-                    color = theme.textPrimary,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-                if (suffix.isNotBlank()) {
-                    Spacer(Modifier.width(10.dp))
-                    Text(
-                        text = suffix,
-                        style = TextStyle(fontSize = AppType.Small),
-                        color = theme.textTertiary,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                }
-            }
-
-            Spacer(Modifier.height(8.dp))
-
-            Text(
-                text = item.title,
-                style = TextStyle(fontSize = AppType.CardTitle, fontWeight = FontWeight.SemiBold, lineHeight = 24.sp),
-                color = theme.textPrimary,
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis,
-            )
-
-            if (item.caption.isNotBlank()) {
-                Spacer(Modifier.height(6.dp))
-                Text(
-                    text = item.caption,
-                    style = TextStyle(fontSize = AppType.Caption, lineHeight = 19.sp),
-                    color = theme.textSecondary,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis,
-                )
-            }
-
-            // ★ 五个计数一个都没拿到时整行不画（`dynamicStatLine` 返回空串），见那个函数的说明
-            if (statLine.isNotBlank()) {
-                Spacer(Modifier.height(8.dp))
-                Text(
-                    text = statLine,
-                    style = TextStyle(fontSize = AppType.Small),
-                    color = theme.textTertiary,
-                    maxLines = 1,
-                )
-            }
-        }
-    }
-}
-
-/**
  * 「没内容」时的说明。四种原因四句话（见 [DynamicScreen] 那张表）。
  */
 @Composable
 private fun DynamicNotice(
     state: DynamicState,
+    olderAvailable: Boolean,
+    loadingMore: Boolean,
+    failedPage: Boolean,
     actionLabel: String,
     onAction: () -> Unit,
     requester: FocusRequester,
@@ -478,37 +317,37 @@ private fun DynamicNotice(
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .padding(horizontal = 130.dp),
+            .padding(horizontal = 24.dp).scrollWithScrollbar(rememberScrollState()),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center,
     ) {
         Text(
-            text = when (state) {
-                DynamicState.NEED_LOGIN -> "动态需要登录"
-                DynamicState.EXPIRED -> "登录已经过期"
-                DynamicState.EMPTY -> "最近没有能播的动态"
-                DynamicState.ERROR -> "拿不到动态"
+            text = if (loadingMore) stringResource(R.string.dynamic_loading_older) else if (failedPage) stringResource(R.string.dynamic_failed)
+                else if (olderAvailable) stringResource(R.string.dynamic_older_empty) else when (state) {
+                DynamicState.NEED_LOGIN -> stringResource(R.string.dynamic_need_login)
+                DynamicState.EXPIRED -> stringResource(R.string.dynamic_expired)
+                DynamicState.EMPTY -> stringResource(R.string.dynamic_empty)
+                DynamicState.ERROR -> stringResource(R.string.dynamic_unavailable)
                 // 这两个**不该走到这里** —— 调用方只在"列表空且不在加载中"时才渲染这一屏。
                 // 当表达式写 `when` 必须穷尽，所以留一句话而不是留空白：
                 // 万一日后哪里改错了，屏幕上至少有一行字能指认现场。
-                DynamicState.LOADING, DynamicState.READY -> "状态异常，回到侧栏再进一次这一页"
+                DynamicState.LOADING, DynamicState.READY -> stringResource(R.string.dynamic_reopen)
             },
             style = TextStyle(fontSize = AppType.H2, fontWeight = FontWeight.SemiBold),
             color = theme.textPrimary,
         )
         Text(
-            text = when (state) {
+            text = if (olderAvailable || failedPage) stringResource(R.string.dynamic_older_hint) else when (state) {
                 DynamicState.NEED_LOGIN ->
-                    "动态是你关注的人发的东西，存在账号里，不登录读不到。扫码登录一次就行。"
+                    stringResource(R.string.dynamic_need_login_hint)
                 DynamicState.EXPIRED ->
-                    "服务端说这张凭证不认了（换了密码、或者太久没用）。重新扫一次码就好，本机的记录不会丢。"
+                    stringResource(R.string.dynamic_expired_hint)
                 DynamicState.EMPTY ->
-                    "关注的 UP 主最近发的动态里没有视频。图文和纯文字动态不会出现在这里 —— " +
-                            "这是有意的：遥控器上点它们没有任何反应，那比空着更让人恼火。"
+                    stringResource(R.string.dynamic_empty_hint)
                 DynamicState.ERROR ->
-                    "接口可能变了或网络不通。已经登录了还是这样，就是服务端的问题，看日志能有线索。"
+                    stringResource(R.string.dynamic_error_hint)
                 DynamicState.LOADING, DynamicState.READY ->
-                    "这一屏本来不该出现，麻烦把日志发我。"
+                    stringResource(R.string.dynamic_reopen_hint)
             },
             style = TextStyle(fontSize = AppType.Body3, lineHeight = 22.sp),
             color = theme.textSecondary,
@@ -530,14 +369,6 @@ private fun DynamicNotice(
     }
 }
 
-/** 缩略图按 16:9 解码。300×169 在 1080p 画布上够清楚，解码开销也小 */
-private const val THUMB_W = 300
-private const val THUMB_H = 169
-
-/** 头像显示的 dp 尺寸 / 按它解码的像素尺寸（2 倍够 320dpi 的屏用） */
-private val AVATAR = 28.dp
-private const val AVATAR_PX = 56
-
 /**
  * 动态页的五种状态。
  *
@@ -545,186 +376,6 @@ private const val AVATAR_PX = 56
  * 那个状态只能靠**响应码**判，别的列表接口没有这一档。
  */
 enum class DynamicState { LOADING, NEED_LOGIN, EXPIRED, EMPTY, ERROR, READY }
-
-/**
- * 动态页数据。
- *
- * ## 首屏要"多翻几页"才够看
- *
- * 一页 20 条动态里，视频投稿可能只占两三条（其余是图文/纯文字/专栏）。
- * 只取一页的话，用户进来看见的是一片稀稀拉拉 —— 所以首屏**自动往下翻**，
- * 直到攒够 [MIN_FIRST_PAGE] 条或者服务端说没有下一页，最多翻 [MAX_ROUNDS] 轮。
- *
- * 这是"解析层把非视频条目丢掉"的**配套代价**，不是额外优化：
- * 筛选在本地做，翻页就得自己管。
- */
-class DynamicViewModel(app: Application) : AndroidViewModel(app) {
-
-    private val graph = app as BiliTvApp
-
-    var items by mutableStateOf<List<DynamicItem>>(emptyList())
-        private set
-    var loading by mutableStateOf(true)
-        private set
-    var loadingMore by mutableStateOf(false)
-        private set
-    var hasMore by mutableStateOf(false)
-        private set
-    var moreError by mutableStateOf<Int?>(null)
-        private set
-    var state by mutableStateOf(DynamicState.LOADING)
-        private set
-
-    private var offset = ""
-
-    /** 有没有请求在飞。首屏和翻页共用一个闸 —— 两边同时跑会把列表拼乱。 */
-    private var busy = false
-    private var generation = 0
-
-    /**
-     * 进页面时调用。
-     *
-     * 闸门的理由和关注页一样：侧栏切走再切回来会重新进组合，
-     * `LaunchedEffect(Unit)` 就再跑一次。但**不能无条件跳过** ——
-     * 用户可能刚在设置页登录/退出，那种情况下必须重取。
-     */
-    fun load() {
-        if (state == DynamicState.READY && graph.api.isLoggedIn()) return
-        fetchFirst()
-    }
-
-    /** 「重新加载」用。**必须绕开上面的闸**，否则按了没反应。 */
-    fun reload() {
-        busy = false
-        fetchFirst()
-    }
-
-    private fun fetchFirst() {
-        if (busy) return
-        val requestGeneration = ++generation
-        busy = true
-        loading = true
-        items = emptyList()
-        offset = ""
-        hasMore = false
-        moreError = null
-
-        viewModelScope.launch {
-            if (!graph.api.isLoggedIn()) {
-                // 没登录就**不要发请求** —— 发了也是 -101，白等一个网络往返。
-                // 但要**留一条日志**（和「我的」页一个口径）：否则排查"这一页为什么空着"时，
-                // 日志里既没有请求记录也没有这条说明，只能靠猜。
-                AppLog.i("Dynamic", "未登录，不发任何请求")
-                state = DynamicState.NEED_LOGIN
-                loading = false
-                busy = false
-                return@launch
-            }
-
-            var page = graph.api.dynamicFeed("")
-            if (requestGeneration != generation) return@launch
-            var collected = mergeDynamicItems(emptyList(), page.items)
-            var rounds = 1
-            var cursorAdvanced = true
-            while (
-                collected.size < MIN_FIRST_PAGE &&
-                page.hasMore &&
-                page.code == 0 &&
-                rounds < MAX_ROUNDS
-            ) {
-                val previousOffset = page.nextOffset
-                if (previousOffset.isBlank()) break
-                val nextPage = graph.api.dynamicFeed(previousOffset)
-                if (requestGeneration != generation) return@launch
-                if (nextPage.code != 0) {
-                    moreError = nextPage.code
-                    break // 保留最后成功页的游标，重试不能跳过丢失的一页。
-                }
-                page = nextPage
-                collected = mergeDynamicItems(collected, page.items)
-                rounds++
-                if (page.nextOffset == previousOffset) {
-                    cursorAdvanced = false
-                    break
-                }
-            }
-
-            items = collected
-            offset = page.nextOffset
-            hasMore = page.hasMore && page.nextOffset.isNotBlank() && cursorAdvanced
-            state = when {
-                moreError == CODE_NOT_LOGGED_IN -> DynamicState.EXPIRED
-                collected.isNotEmpty() -> DynamicState.READY
-                // 服务端明说没登录 —— 本机存着凭证但服务端不认 = 登录过期
-                page.code == CODE_NOT_LOGGED_IN -> DynamicState.EXPIRED
-                // 服务端说"成功"，那就真是没有能播的（而不是我们坏了）
-                page.code == 0 -> DynamicState.EMPTY
-                else -> DynamicState.ERROR
-            }
-            loading = false
-            busy = false
-            AppLog.i(
-                "Dynamic",
-                "动态 ${collected.size} 条（翻了 $rounds 页，hasMore=$hasMore，" +
-                        "code=${page.code}，状态=$state）",
-            )
-        }
-    }
-
-    /** 滚到底部时调用。重复调用是安全的（`busy` / `hasMore` 两道闸）。 */
-    fun loadMore() {
-        if (busy || !hasMore || state != DynamicState.READY) return
-        val requestGeneration = generation
-        busy = true
-        loadingMore = true
-        moreError = null
-
-        viewModelScope.launch {
-            val before = items.size
-            var rounds = 0
-            do {
-                val page = graph.api.dynamicFeed(offset)
-                if (requestGeneration != generation) return@launch
-                rounds++
-                if (page.code != 0) {
-                    moreError = page.code
-                    if (page.code == CODE_NOT_LOGGED_IN) state = DynamicState.EXPIRED
-                    AppLog.w("Dynamic", "更早的动态加载失败，保留已有内容；code=${page.code}")
-                    break
-                }
-                items = mergeDynamicItems(items, page.items)
-                /*
-                 * ★ 游标没往前走就**必须停**。
-                 *
-                 * 否则（服务端字段改名、或给了空串）下一轮会拿同一个 offset
-                 * 再问一次，拿回同一批数据 —— 表现是列表底部无限重复同一批卡片，
-                 * 而且请求会一直发下去。宁可少一页，也不能这样。
-                 */
-                val next = page.nextOffset
-                if (next.isBlank() || next == offset) {
-                    hasMore = false
-                } else {
-                    offset = next
-                    hasMore = page.hasMore
-                }
-                // 图文页或重叠页仍推进游标；最多自动跨 3 页，余下由底部按钮继续。
-            } while (items.size == before && hasMore && rounds < MAX_ROUNDS)
-            loadingMore = false
-            busy = false
-            AppLog.i("Dynamic", "翻 $rounds 页 → 共 ${items.size} 条（hasMore=$hasMore，" +
-                "最新=${items.firstOrNull()?.pubTs}，最早=${items.lastOrNull()?.pubTs}）")
-        }
-    }
-
-    private companion object {
-        /** 首屏至少攒这么多条。一页 20 条里视频通常只占几条，所以 12 是个"看起来像列表"的数 */
-        const val MIN_FIRST_PAGE = 12
-
-        /** 首屏最多自动翻几页。防住"服务端一直说有下一页但都给非视频"这种最坏情况 */
-        const val MAX_ROUNDS = 3
-    }
-}
-
 
 /**
  * 把一条动态转成一张**首页那样的卡**。

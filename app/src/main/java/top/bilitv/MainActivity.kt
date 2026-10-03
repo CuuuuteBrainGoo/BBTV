@@ -4,8 +4,13 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.safeDrawing
+import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.core.view.WindowCompat
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -44,6 +49,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        WindowCompat.setDecorFitsSystemWindows(window, false)
         // 冷启动分段计时之二，见 BiliTvApp.onCreate 的说明
         AppLog.i("Boot", "③MainActivity.onCreate 起点")
         val app = application as BiliTvApp
@@ -52,13 +58,28 @@ class MainActivity : ComponentActivity() {
             var skin by remember { mutableStateOf(app.settings.themeSkin) }
             // 从盘上读回用户配过的侧栏，经 NavTab.parse 兜底（认不出的名字丢掉、固定项补回来）
             var railTabs by remember { mutableStateOf(NavTab.parse(app.settings.navTabs)) }
+            var cards by remember { mutableStateOf(Triple(app.settings.cardColumns, app.settings.collectionColumns, app.settings.cardSize)) }
+            var uiOptions by remember { mutableStateOf(app.settings.interfaceAnimations to app.settings.showScrollbars) }
+            var fontScale by remember { mutableStateOf(app.settings.interfaceFontScale) }
+            var backdrop by remember { mutableStateOf(app.settings.backgroundStyle) }
+            DisposableEffect(app.settings) {
+                val stop = app.settings.observeChanges {
+                    cards = Triple(app.settings.cardColumns, app.settings.collectionColumns, app.settings.cardSize)
+                    fontScale = app.settings.interfaceFontScale
+                    uiOptions = app.settings.interfaceAnimations to app.settings.showScrollbars
+                    backdrop = app.settings.backgroundStyle
+                    skin = app.settings.themeSkin
+                    railTabs = NavTab.parse(app.settings.navTabs)
+                }
+                onDispose { stop() }
+            }
 
             // 冷启动分段计时之四：这一行跑起来 = 首帧的组合已经完成
             LaunchedEffect(Unit) { AppLog.i("Boot", "④首帧组合完成") }
 
-            BiliTvTheme(skin) {
+            BiliTvTheme(skin, cards.first, cards.second, cards.third, fontScale, uiOptions.first, uiOptions.second, backdrop) {
                 Surface(
-                    modifier = Modifier.fillMaxSize(),
+                    modifier = Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.safeDrawing),
                     color = AppTheme.current.background,
                 ) {
                     BiliTvRoot(

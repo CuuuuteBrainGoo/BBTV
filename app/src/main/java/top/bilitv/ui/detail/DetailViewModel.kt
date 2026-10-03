@@ -6,6 +6,10 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
 import top.bilitv.BiliTvApp
 import top.bilitv.data.model.VideoDetail
@@ -20,7 +24,8 @@ import top.bilitv.data.model.VideoDetail
 
 class DetailViewModel(app: Application) : AndroidViewModel(app) {
 
-    private val api = (app as BiliTvApp).api
+    private val graph = app as BiliTvApp
+    private val api = graph.api
 
     var detail by mutableStateOf<VideoDetail?>(null)
         private set
@@ -30,18 +35,38 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
         private set
 
     private var loadedBvid: String? = null
+    private var loadedContext: Triple<top.bilitv.data.settings.VideoApiSource, Boolean, Long>? = null
+    private var generation = 0
+    private var requestJob: Job? = null
+
+    fun stopLoading() {
+        generation++
+        requestJob?.cancel(); requestJob = null
+        loading = false
+    }
 
     fun load(bvid: String, force: Boolean = false) {
-        if (!force && loadedBvid == bvid && detail != null) return
+        val context = Triple(graph.settings.videoApiSource, api.isLoggedIn(), api.myMid())
+        if (!force && loadedBvid == bvid && loadedContext == context && (loading || detail != null)) return
+        stopLoading()
+        if (loadedBvid != bvid || loadedContext != context) detail = null
         loadedBvid = bvid
+        loadedContext = context
         loading = true
         // 重试前先清掉上一条错误，否则出错文案会在转圈时还挂着
         error = null
-        viewModelScope.launch {
-            val d = api.videoDetail(bvid)
-            detail = d
-            error = if (d == null) "拿不到视频详情（可能已失效或接口变了）" else null
-            loading = false
+        val g = generation
+        requestJob = viewModelScope.launch {
+            try {
+                val d = api.videoDetail(bvid)?.takeIf { it.bvid == bvid }
+                    ?: throw java.io.IOException("详情不可用")
+                currentCoroutineContext().ensureActive()
+                if (g != generation || loadedBvid != bvid) return@launch
+                detail = d; error = null
+            } catch (e: CancellationException) { throw e }
+            catch (e: Exception) {
+                if (g == generation) error = "拿不到视频详情，请重试（内容可能已失效或暂时不可用）"
+            } finally { if (g == generation) loading = false }
         }
     }
 

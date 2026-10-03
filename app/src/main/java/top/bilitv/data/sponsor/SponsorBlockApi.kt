@@ -1,11 +1,15 @@
 package top.bilitv.data.sponsor
 
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.io.IOException
 import java.security.MessageDigest
+import top.bilitv.data.api.readCancellable
 
 /**
  * SponsorBlock（bsbsb.top）片段查询。
@@ -27,27 +31,29 @@ class SponsorBlockApi(
 ) {
 
     /**
-     * 查询片段。任何失败都返回空列表 —— 广告跳过是"锦上添花"，不能因此影响播放。
+     * 非取消失败静默返回空列表；取消关闭实际请求，不尝试备用服务器。
      */
     suspend fun fetchSegments(bvid: String, cid: Long): List<SponsorSegment> =
         withContext(Dispatchers.IO) {
             if (bvid.isBlank()) return@withContext emptyList()
-            runCatching {
+            try {
                 val prefix = sha256Hex(bvid).take(HASH_PREFIX_LEN)
                 val raw = requestFirstAvailable("/api/skipSegments/$prefix")
-                if (raw.isNullOrBlank()) return@runCatching emptyList()
-                pickSegmentsForCid(parseSponsorHashed(raw, bvid), cid)
-            }.getOrDefault(emptyList())
+                if (raw.isNullOrBlank()) return@withContext emptyList()
+                withContext(Dispatchers.Default) { pickSegmentsForCid(parseSponsorHashed(raw, bvid), cid) }
+            } catch (e: CancellationException) { throw e }
+            catch (_: Exception) { emptyList() }
         }
 
     /**
      * 依次尝试各服务器。返回 null 表示"确定没有数据"（404）；
      * 全部失败则抛 [IOException]，由调用方统一吞掉。
      */
-    private fun requestFirstAvailable(path: String): String? {
+    private suspend fun requestFirstAvailable(path: String): String? {
         var lastError: Throwable? = null
         for (base in bases) {
-            val attempt = runCatching {
+            currentCoroutineContext().ensureActive()
+            try {
                 val req = Request.Builder()
                     .url(base + path)
                     .header("Origin", CLIENT_ORIGIN)
@@ -55,7 +61,7 @@ class SponsorBlockApi(
                     .header("X-Ext-Version", CLIENT_TAG)
                     .header("Accept", "application/json")
                     .build()
-                client.newCall(req).execute().use { resp ->
+                return client.newCall(req).readCancellable { resp ->
                     when {
                         // 404 = 该视频没有被标注，属正常情况
                         resp.code == 404 -> null
@@ -63,12 +69,8 @@ class SponsorBlockApi(
                         else -> throw IOException("HTTP ${resp.code}")
                     }
                 }
-            }
-            attempt.onSuccess { return it }
-            val err = attempt.exceptionOrNull() ?: continue
-            // 只有网络层异常才换备用服务器；其他（解析/协议）错误直接放弃，避免无谓重试
-            if (err !is IOException) throw err
-            lastError = err
+            } catch (e: CancellationException) { throw e }
+            catch (e: IOException) { lastError = e }
         }
         throw IOException("SponsorBlock 所有服务器均不可达", lastError)
     }

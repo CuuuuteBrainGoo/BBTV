@@ -46,7 +46,7 @@ class SettingsCatalogTest {
         val items = SettingsCategory.entries.flatMap { SettingsCatalog.itemsIn(it, true) }
         assertEquals(SettingsItem.entries.size, items.size)
         assertEquals(SettingsItem.entries.toSet(), items.toSet())
-        assertEquals(SettingsCategory.entries.size, SettingsCategory.entries.map { it.label }.toSet().size)
+        assertEquals(SettingsCategory.entries.size, SettingsCategory.entries.map { it.labelRes }.toSet().size)
     }
 
     @Test fun basicModeHasNoEmptyOrAdvancedCategories() {

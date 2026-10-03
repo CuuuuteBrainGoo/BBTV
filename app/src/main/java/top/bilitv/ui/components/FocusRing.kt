@@ -3,6 +3,9 @@ package top.bilitv.ui.components
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.ExperimentalFoundationApi
+import android.view.HapticFeedbackConstants
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
@@ -96,6 +99,7 @@ import top.bilitv.ui.theme.AppTheme
  *   现在两者都读皮肤，全项目焦点放大只有一个出处。
  * @param onClick 点击 / 遥控器确定键的回调。
  */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun Modifier.focusRing(
     contentDescription: String? = null,
@@ -115,6 +119,7 @@ fun Modifier.focusRing(
      * 现在跟着皮肤走，改一处（`Theme.kt`）= 全项目所有焦点态一起变。
      */
     scaleOnFocus: Float? = null,
+    onLongClick: (() -> Unit)? = null,
     onClick: () -> Unit,
 ): Modifier {
     val theme = AppTheme.current
@@ -149,13 +154,15 @@ fun Modifier.focusRing(
             }
     }
 
-    return modifier
-        .focusSemantics(contentDescription)
-        .clickable(
-            interactionSource = remember { MutableInteractionSource() },
-            indication = null,
-            onClick = touchClearFocus(onClick),
-        )
+    val interaction = remember { MutableInteractionSource() }
+    val click = touchClearFocus(onClick)
+    val view = LocalView.current
+    val labelled = modifier.focusSemantics(contentDescription)
+    return if (onLongClick == null) labelled.clickable(interactionSource = interaction, indication = null, onClick = click)
+    else labelled.combinedClickable(interactionSource = interaction, indication = null, onClick = click, onLongClick = {
+        if (view.isInTouchMode) view.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
+        onLongClick()
+    })
 }
 
 /**

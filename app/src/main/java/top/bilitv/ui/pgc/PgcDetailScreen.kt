@@ -1,6 +1,11 @@
 package top.bilitv.ui.pgc
 
-import android.app.Application
+import top.bilitv.R
+import androidx.compose.ui.res.stringResource
+
+import top.bilitv.ui.theme.pageBackground
+
+import top.bilitv.ui.components.verticalScrollbar
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -9,12 +14,14 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.rememberScrollState
+import top.bilitv.ui.components.scrollWithScrollbar
+import top.bilitv.ui.components.LoadFeedback
+import top.bilitv.ui.theme.CardGridCells
 import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items as gridItems
@@ -22,6 +29,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -30,21 +38,23 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalDensity
+import top.bilitv.ui.components.cappedCover
+import top.bilitv.ui.components.adaptiveHeroHeight
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.lifecycle.AndroidViewModel
-import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.compose.viewModel
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
-import kotlinx.coroutines.launch
 import top.bilitv.BiliTvApp
 import top.bilitv.data.model.PgcDetail
 import top.bilitv.data.model.PgcEpisode
@@ -56,7 +66,6 @@ import top.bilitv.ui.components.fixedScheme
 import top.bilitv.ui.components.focusRing
 import top.bilitv.ui.theme.AppTheme
 import top.bilitv.ui.theme.AppType
-import top.bilitv.util.AppLog
 
 /**
  * 影视 / 番剧的「剧集详情」页。
@@ -67,12 +76,8 @@ import top.bilitv.util.AppLog
  * 想跳集得退回列表再点，是电视上最烦人的一种交互。
  * Netflix / Disney+ / Apple TV 都是"详情页 + 选集"，这里照做。
  *
- * ## ⚠️ 未登录时这一页拿不到数据（这是接口的限制，不是 bug）
- *
- * `pgc/view/web/season` 在**未登录时返回 `code=0` 但 `data=null`**。
- * 所以这一页必须有第三种状态：**"登录后才能看"**，
- * 而且要和"接口挂了"分开说 —— 两种情况用户能做的事完全不同。
- * 判据用 `BiliApi.isLoggedIn()`，不能只看返回值空不空。
+ * 空详情不代表已经确认权限：游客、地区限制或暂时接口故障都可能造成空响应。
+ * 提供重试和可选登录入口，播放权限仍由取流接口确认。
  */
 @Composable
 fun PgcDetailScreen(
@@ -90,15 +95,18 @@ fun PgcDetailScreen(
 ) {
     val vm: PgcDetailViewModel = viewModel()
     LaunchedEffect(seasonId) { vm.load(seasonId) }
+    DisposableEffect(vm) { onDispose { vm.stopLoading() } }
+    val gridState = androidx.compose.foundation.lazy.grid.rememberLazyGridState()
     val theme = AppTheme.current
 
-    Box(modifier = Modifier.fillMaxSize().background(theme.background)) {
+    Box(modifier = Modifier.fillMaxSize().background(theme.pageBackground)) {
         val detail = vm.detail
         when {
-            vm.loading -> CircularProgressIndicator(Modifier.align(Alignment.Center))
+            vm.loading && detail == null -> CircularProgressIndicator(Modifier.align(Alignment.Center))
 
             detail != null -> LazyVerticalGrid(
-                columns = GridCells.Fixed(EPISODE_COLUMNS),
+                state = gridState,
+                columns = CardGridCells(100.dp),
                 contentPadding = PaddingValues(
                     start = theme.screenPadding,
                     end = theme.screenPadding,
@@ -106,7 +114,7 @@ fun PgcDetailScreen(
                 ),
                 horizontalArrangement = Arrangement.spacedBy(theme.cardGap),
                 verticalArrangement = Arrangement.spacedBy(theme.rowGap),
-                modifier = Modifier.fillMaxSize(),
+                modifier = Modifier.fillMaxSize().verticalScrollbar(gridState),
             ) {
                 item(span = { GridItemSpan(maxLineSpan) }, key = "hero") {
                     SeasonHeader(
@@ -121,7 +129,7 @@ fun PgcDetailScreen(
 
                 item(span = { GridItemSpan(maxLineSpan) }, key = "label") {
                     Text(
-                        text = "选集 · 共 ${detail.episodes.size} 集",
+                        text = stringResource(R.string.cinema_episode_count, detail.episodes.size),
                         style = TextStyle(fontSize = AppType.H4, fontWeight = FontWeight.SemiBold),
                         color = theme.textPrimary,
                         modifier = Modifier.padding(top = 12.dp, bottom = 2.dp),
@@ -142,8 +150,14 @@ fun PgcDetailScreen(
                 isLoggedIn = vm.loggedIn,
                 onBack = onBack,
                 onNeedLogin = onNeedLogin,
+                onRetry = vm::retry,
             )
         }
+
+        if (detail != null && (vm.loading || vm.message.isNotEmpty())) LoadFeedback(
+            vm.loading, vm.message.takeIf { it.isNotEmpty() }, vm::retry,
+            Modifier.align(Alignment.BottomCenter).padding(theme.screenPadding).background(theme.surfaceHigh),
+        )
 
         BackChip(
             onBack = onBack,
@@ -151,9 +165,6 @@ fun PgcDetailScreen(
         )
     }
 }
-
-/** 一屏几列剧集。16:9 缩略图，8 列在 960dp 宽下每张约 96dp。 */
-private const val EPISODE_COLUMNS = 8
 
 /**
  * 剧集详情的头部：全幅剧照 + 标题 + 评分 + 简介 + 主按钮。
@@ -169,7 +180,7 @@ private fun SeasonHeader(detail: PgcDetail, onPlayFirst: () -> Unit) {
     Box(
         modifier = Modifier
             .fillMaxWidth()
-            .height(HEADER_HEIGHT),
+            .heightIn(min = adaptiveHeroHeight(330.dp, 200.dp, .55f)),
     ) {
         AsyncImage(
             model = ImageRequest.Builder(context)
@@ -179,15 +190,15 @@ private fun SeasonHeader(detail: PgcDetail, onPlayFirst: () -> Unit) {
                 .build(),
             contentDescription = null,
             contentScale = ContentScale.Crop,
-            modifier = Modifier.fillMaxSize(),
+            modifier = Modifier.matchParentSize(),
         )
         Box(
-            modifier = Modifier.fillMaxSize().background(
+            modifier = Modifier.matchParentSize().background(
                 Brush.verticalGradient(0.3f to Color.Transparent, 1f to theme.background)
             )
         )
         Box(
-            modifier = Modifier.fillMaxSize().background(
+            modifier = Modifier.matchParentSize().background(
                 Brush.horizontalGradient(
                     0f to theme.background.copy(alpha = 0.9f),
                     0.7f to theme.background.copy(alpha = 0.3f),
@@ -199,8 +210,8 @@ private fun SeasonHeader(detail: PgcDetail, onPlayFirst: () -> Unit) {
         Column(
             modifier = Modifier
                 .align(Alignment.BottomStart)
-                .fillMaxWidth(0.72f)
-                .padding(start = theme.screenPadding + 16.dp, bottom = 22.dp),
+                .fillMaxWidth(if (LocalConfiguration.current.screenWidthDp >= 640) 0.72f else 1f)
+                .padding(start = theme.screenPadding + 16.dp, end = 20.dp, top = 72.dp, bottom = 22.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             Row(
@@ -213,7 +224,7 @@ private fun SeasonHeader(detail: PgcDetail, onPlayFirst: () -> Unit) {
                         style = TextStyle(fontSize = AppType.H4, fontWeight = FontWeight.Bold),
                         color = theme.primary,
                     )
-                    Text("分", style = TextStyle(fontSize = AppType.Small), color = theme.textSecondary)
+                    Text(stringResource(R.string.cinema_score_unit), style = TextStyle(fontSize = AppType.Small), color = theme.textSecondary)
                 }
                 if (detail.subtitle.isNotBlank()) {
                     Text(
@@ -246,7 +257,7 @@ private fun SeasonHeader(detail: PgcDetail, onPlayFirst: () -> Unit) {
 
             if (detail.episodes.isNotEmpty()) {
                 FilledActionButton(
-                    text = "播放第 1 集",
+                    text = stringResource(R.string.cinema_play_first),
                     onClick = onPlayFirst,
                     modifier = Modifier.padding(top = 6.dp),
                 )
@@ -264,6 +275,8 @@ private fun EpisodeCard(
 ) {
     val theme = AppTheme.current
     val context = LocalContext.current
+    val textHeight = with(LocalDensity.current) { 19.sp.toDp() * 2 + 12.dp }
+    val coverLimit = (LocalConfiguration.current.screenHeightDp.dp - 128.dp - textHeight).coerceAtLeast(72.dp)
 
     Column(
         modifier = modifier
@@ -278,7 +291,7 @@ private fun EpisodeCard(
         Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .aspectRatio(16f / 9f)
+                .cappedCover(16f / 9f, coverLimit)
                 .clip(RoundedCornerShape(theme.cardCorner - 3.dp)),
         ) {
             AsyncImage(
@@ -288,7 +301,7 @@ private fun EpisodeCard(
                     .crossfade(true)
                     .build(),
                 contentDescription = null,
-                contentScale = ContentScale.Crop,
+                contentScale = ContentScale.Fit,
                 modifier = Modifier.matchParentSize(),
             )
             if (episode.durationSec > 0) {
@@ -320,8 +333,7 @@ private fun EpisodeCard(
 /**
  * 「拿不到数据」时的说明页。
  *
- * 关键在于**把两种原因分开说**：没登录（用户能自己解决）和接口异常（用户解决不了，
- * 只能等我们修）。含混地显示一句"加载失败"，用户唯一能做的就是反复重试。
+ * 空详情不能推断权限；提供真实重试与游客可选登录，保持文字与按钮可滚动到达。
  */
 @Composable
 private fun LockedNotice(
@@ -329,15 +341,17 @@ private fun LockedNotice(
     isLoggedIn: Boolean,
     onBack: () -> Unit,
     onNeedLogin: () -> Unit,
+    onRetry: () -> Unit,
 ) {
     val theme = AppTheme.current
     Column(
-        modifier = Modifier.fillMaxSize().padding(horizontal = 120.dp),
+        modifier = Modifier.fillMaxSize().scrollWithScrollbar(rememberScrollState())
+            .padding(horizontal = 24.dp, vertical = 72.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center,
     ) {
         Text(
-            text = if (isLoggedIn) "暂时拿不到剧集信息" else "番剧与影视需要登录后才能观看",
+            text = stringResource(R.string.cinema_detail_unavailable),
             style = TextStyle(fontSize = AppType.H2, fontWeight = FontWeight.SemiBold),
             color = theme.textPrimary,
         )
@@ -347,55 +361,16 @@ private fun LockedNotice(
             color = theme.textSecondary,
             modifier = Modifier.padding(top = 14.dp),
         )
+        val retryFocus = remember { androidx.compose.ui.focus.FocusRequester() }
+        FilledActionButton(stringResource(R.string.action_retry), onRetry, Modifier.padding(top = 20.dp).focusRequester(retryFocus))
+        top.bilitv.ui.components.RequestFocusOnAppear(retryFocus, message)
         if (!isLoggedIn) {
             FilledActionButton(
-                text = "去登录",
+                text = stringResource(R.string.action_sign_in),
                 onClick = onNeedLogin,
                 modifier = Modifier.padding(top = 24.dp),
             )
         }
         BackChip(onBack = onBack, modifier = Modifier.padding(top = 16.dp))
-    }
-}
-
-/** 详情页头部高度。比列表页主视觉略高，因为要放下简介。 */
-private val HEADER_HEIGHT = 330.dp
-
-class PgcDetailViewModel(app: Application) : AndroidViewModel(app) {
-
-    private val graph = app as BiliTvApp
-
-    var detail by mutableStateOf<PgcDetail?>(null)
-        private set
-    var loading by mutableStateOf(true)
-        private set
-
-    /** 拿不到数据时给用户看的那句话。**已经区分过"没登录"和"接口异常"**。 */
-    var message by mutableStateOf("")
-        private set
-
-    var loggedIn by mutableStateOf(false)
-        private set
-
-    private var loadedId = 0L
-
-    fun load(seasonId: Long) {
-        if (loadedId == seasonId && detail != null) return
-        loadedId = seasonId
-        loading = true
-        viewModelScope.launch {
-            loggedIn = graph.api.isLoggedIn()
-            val d = graph.api.pgcDetail(seasonId)
-            detail = d
-            message = when {
-                d != null -> ""
-                !loggedIn -> "这部剧的剧集列表和播放地址都要带账号信息才拿得到。" +
-                        "登录之后这一页就会自动有内容，不需要重新装 App。"
-                else -> "已经登录了，但接口还是返回空。可能是这部剧有地区限定，" +
-                        "或者接口变了 —— 点「日志」看详情。"
-            }
-            loading = false
-            AppLog.i("PgcDetail", "season=$seasonId 结果=${d?.let { "${it.episodes.size} 集" } ?: "空"} 已登录=$loggedIn")
-        }
     }
 }

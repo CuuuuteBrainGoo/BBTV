@@ -30,9 +30,34 @@ import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
+import androidx.compose.foundation.gestures.scrollBy
+import androidx.compose.runtime.mutableStateMapOf
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.boundsInRoot
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.res.stringResource
+import top.bilitv.R
+import android.view.HapticFeedbackConstants
+import kotlinx.coroutines.delay
 import top.bilitv.ui.components.focusRing
 import top.bilitv.ui.theme.AppTheme
 import top.bilitv.ui.theme.AppType
+
+/** Signed scroll step; a held finger keeps scrolling at the visible panel edge. */
+internal fun dragScrollStep(y: Float, top: Float, bottom: Float, band: Float, step: Float): Float {
+    if (bottom <= top || band <= 0f) return 0f
+    return when {
+        y < top + band -> -step * ((top + band - y) / band).coerceIn(0f, 1f)
+        y > bottom - band -> step * ((y - bottom + band) / band).coerceIn(0f, 1f)
+        else -> 0f
+    }
+}
 
 /*
  * ════════════════════════════════════════════════════════════════════════════
@@ -136,6 +161,12 @@ data class PickItem(
     val locked: Boolean = false,
 )
 
+internal fun reorderPick(ids: List<String>, moving: String, target: String?, locked: Set<String>): List<String> {
+    val from = ids.indexOf(moving); val to = ids.indexOf(target)
+    if (from < 0 || to < 0 || from == to || (minOf(from, to)..maxOf(from, to)).any { ids[it] in locked }) return ids
+    return ids.toMutableList().apply { removeAt(from); add(to, moving) }
+}
+
 /**
  * 一屏铺开的「长方圆角」小胶囊选择器。
  *
@@ -211,6 +242,13 @@ fun OrderPicker(
     tailDown: FocusRequester? = null,
 ) {
     val theme = AppTheme.current
+    val view = LocalView.current
+    val bounds = remember { mutableStateMapOf<String, Rect>() }
+    var flowOrigin by remember { mutableStateOf(Offset.Zero) }
+    var dragged by remember { mutableStateOf<String?>(null) }
+    var dragPoint by remember { mutableStateOf(Offset.Zero) }
+    val scroll = LocalSettingsScroll.current
+    val density = LocalDensity.current
 
     /** 认得出、去过重的启用名单；一个都认不出时回落到"全部启用"。**不 remember，直接算。** */
     val enabled = run {
@@ -226,6 +264,26 @@ fun OrderPicker(
     val order = enabled.mapNotNull { id -> all.firstOrNull { it.id == id } } +
         all.filterNot { it.id in enabled }
     val enabledCount = enabled.size
+    val latestEnabled by rememberUpdatedState(enabled)
+    val latestChange by rememberUpdatedState(onChange)
+    val lockedIds = remember(all) { all.filter { it.locked }.map { it.id }.toSet() }
+    fun reorderAt(point: Offset) {
+        val id = dragged ?: return
+        val target = bounds.entries.firstOrNull { it.value.contains(point) }?.key
+        val next = reorderPick(latestEnabled, id, target, lockedIds)
+        if (next != latestEnabled) latestChange(next)
+    }
+    LaunchedEffect(dragged, scroll, density) {
+        if (dragged == null || scroll == null) return@LaunchedEffect
+        val band = with(density) { 48.dp.toPx() }
+        val step = with(density) { 12.dp.toPx() }
+        while (dragged != null) {
+            val viewport = scroll.viewport
+            val delta = dragScrollStep(dragPoint.y, viewport.top, viewport.bottom, band, step)
+            if (delta != 0f && scroll.state.scrollBy(delta) != 0f) reorderAt(dragPoint)
+            delay(50)
+        }
+    }
 
     /*
      * ★ 显式的 1-D 焦点链。
@@ -320,13 +378,30 @@ fun OrderPicker(
 
     Column(modifier = Modifier.fillMaxWidth()) {
         FlowRow(
-            modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+            modifier = Modifier.fillMaxWidth().padding(top = 8.dp)
+                .onGloballyPositioned { flowOrigin = it.boundsInRoot().topLeft }
+                .pointerInput(all) {
+                    var point = Offset.Zero
+                    detectDragGesturesAfterLongPress(onDragStart = { start ->
+                        point = start + flowOrigin
+                        dragPoint = point
+                        dragged = bounds.entries.firstOrNull { it.value.contains(point) }?.key
+                            ?.takeIf { id -> id in latestEnabled && all.none { it.id == id && it.locked } }
+                        if (dragged != null) view.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
+                    }, onDrag = { change, delta ->
+                        if (dragged == null) return@detectDragGesturesAfterLongPress
+                        change.consume(); point += delta
+                        dragPoint = point
+                        reorderAt(point)
+                    }, onDragEnd = { dragged = null }, onDragCancel = { dragged = null })
+                },
             horizontalArrangement = Arrangement.spacedBy(8.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             order.forEachIndexed { index, item ->
                 OrderChip(
                     modifier = Modifier
+                        .onGloballyPositioned { bounds[item.id] = it.boundsInRoot() }
                         .then(if (index == 0 && firstFocus != null) Modifier.focusRequester(firstFocus) else Modifier)
                         .then(if (index == order.lastIndex && lastFocus != null) Modifier.focusRequester(lastFocus) else Modifier),
                     label = item.label,
@@ -401,10 +476,10 @@ private fun OrderChip(
      * 视觉上只给一个小圆点，全话在这里。
      */
     val stateText = when {
-        locked -> "固定，不可隐藏、不可移动"
-        pinned -> "固定，不可隐藏"
-        enabled -> "已显示"
-        else -> "已隐藏"
+        locked -> stringResource(R.string.order_locked)
+        pinned -> stringResource(R.string.order_pinned)
+        enabled -> stringResource(R.string.order_visible)
+        else -> stringResource(R.string.order_hidden)
     }
 
     Row(

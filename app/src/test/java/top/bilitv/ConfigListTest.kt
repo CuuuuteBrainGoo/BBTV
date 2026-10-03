@@ -52,13 +52,13 @@ class ConfigListTest {
     @Test
     fun `首页分区 认不出的 id 被丢掉 其余保持原顺序`() {
         val got = HomeSection.parse(listOf("movie", "no_such_section", "music"))
-        assertEquals(listOf(HomeSection.MOVIE, HomeSection.MUSIC), got)
+        assertEquals(listOf(HomeSection.MOVIE, HomeSection.MUSIC, HomeSection.RECOMMEND, HomeSection.POPULAR), got)
     }
 
     @Test
     fun `首页分区 重复的 id 只保留一次`() {
         val got = HomeSection.parse(listOf("movie", "movie", "music", "movie"))
-        assertEquals(listOf(HomeSection.MOVIE, HomeSection.MUSIC), got)
+        assertEquals(listOf(HomeSection.MOVIE, HomeSection.MUSIC, HomeSection.RECOMMEND, HomeSection.POPULAR), got)
     }
 
     // ---------------------------------------------------------------- 侧栏
@@ -192,8 +192,12 @@ class ConfigListTest {
     }
 
     @Test
-    fun `控制栏 默认名单等于全部枚举且无重复`() {
-        assertEquals(PlayerBarButton.entries.size, PlayerBarButton.DEFAULT.size)
+    fun `控制栏 默认名单保留基本按钮且扩展入口按需开启`() {
+        assertEquals(PlayerBarButton.entries.filter { it.defaultVisible }, PlayerBarButton.DEFAULT)
+        assertTrue(PlayerBarButton.DEFAULT.none { it in listOf(PlayerBarButton.CATALOGUE, PlayerBarButton.RECOMMEND,
+            PlayerBarButton.PREVIOUS, PlayerBarButton.NEXT, PlayerBarButton.REFRESH, PlayerBarButton.LOOP) })
+        assertEquals(listOf(PlayerBarButton.CATALOGUE, PlayerBarButton.NEXT, PlayerBarButton.PLAY),
+            PlayerBarButton.parse(listOf("catalogue", "next")))
         assertEquals(
             "默认名单不该有重复",
             PlayerBarButton.DEFAULT.size,

@@ -2,6 +2,7 @@ package top.bilitv.ui.settings
 
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.res.stringResource
 import top.bilitv.ui.NavTab
 import top.bilitv.ui.home.HomeSection
 import top.bilitv.ui.player.PlayerBarButton
@@ -37,8 +38,8 @@ fun HomeSectionPicker(
     tailDown: FocusRequester? = null,
 ) {
     OrderPicker(
-        all = HomeSection.entries.map { PickItem(it.id, it.label) },
-        enabledIds = enabledIds,
+        all = HomeSection.entries.map { PickItem(it.id, stringResource(it.labelRes), pinned = it == HomeSection.RECOMMEND || it == HomeSection.POPULAR) },
+        enabledIds = HomeSection.parse(enabledIds).map { it.id },
         onChange = onChange,
         pinTail = pinTail,
         firstFocus = firstFocus, lastFocus = lastFocus, headUp = headUp, tailDown = tailDown,
@@ -80,7 +81,7 @@ fun NavTabPicker(
         all = NavTab.entries.map {
             PickItem(
                 id = it.name,
-                label = it.label,
+                label = stringResource(it.labelRes),
                 // 不许隐藏：首页 / 搜索 / 我的 / 设置（判据见 `NavTab.PINNED`）
                 pinned = it in NavTab.PINNED,
                 // 不许移动：首页钉首位、设置钉末位（少爷第 3 条原话）
@@ -123,7 +124,7 @@ fun PlayerBarPicker(
     tailDown: FocusRequester? = null,
 ) {
     OrderPicker(
-        all = PlayerBarButton.entries.map { PickItem(it.id, it.label, pinned = it.pinned) },
+        all = PlayerBarButton.entries.map { PickItem(it.id, stringResource(it.labelRes), pinned = it.pinned) },
         enabledIds = enabledIds,
         onChange = onChange,
         pinTail = pinTail,

@@ -7,6 +7,8 @@ import androidx.compose.runtime.setValue
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.CancellationException
 import top.bilitv.BiliTvApp
 import top.bilitv.data.model.FavFolder
 import top.bilitv.data.model.FeedItem
@@ -52,29 +54,46 @@ class FavViewModel(app: Application) : AndroidViewModel(app) {
     /** 正在追加下一页。 */
     var loadingMore by mutableStateOf(false)
         private set
+    var error by mutableStateOf<String?>(null)
+        private set
 
-    private var page = 1
-    private var hasMore = true
+    private var page = 0
+    var hasMore by mutableStateOf(true)
+        private set
     private var inFlight = false
+    private var gen = 0
+    private var loadJob: Job? = null
 
     /** 进页面时调一次（带闸门，理由同 FollowViewModel）。 */
     fun load() {
-        if (inFlight || state == FavState.FOLDERS && folders.isNotEmpty()) return
+        if (inFlight) return
         if (!graph.api.isLoggedIn()) {
+            stopLoading()
+            opened = null; items = emptyList(); folders = emptyList()
             state = FavState.NEED_LOGIN
             return
         }
-        viewModelScope.launch {
+        if (opened != null) {
+            if (state == FavState.ERROR || state == FavState.ITEMS_LOADING) retry()
+            return
+        }
+        if (state == FavState.FOLDERS && folders.isNotEmpty()) return
+        val g = ++gen
+        inFlight = true
+        loadJob = viewModelScope.launch {
+          try {
             state = FavState.LOADING
             // 收藏夹列表要显式传自己的 mid —— 少这个参数接口报 -400，
             // 那个错**看起来像接口坏了**（docs/21 记过这次误判）。
             val mid = graph.api.myProfile().let { if (it is MyProfileResult.Ok) it.profile.mid else 0L }
+            if (g != gen) return@launch
             if (mid <= 0L) {
                 state = FavState.ERROR
                 AppLog.w("Fav", "拿不到自己的 mid，收藏夹列表查不了")
                 return@launch
             }
             val foldersOrNull = graph.api.favFolders(mid)
+            if (g != gen) return@launch
             if (foldersOrNull == null) {
                 // ★ 拿不到 ≠ 没有。说"还没有收藏夹"会让有收藏夹的人以为收藏丢了。
                 state = FavState.ERROR
@@ -84,13 +103,18 @@ class FavViewModel(app: Application) : AndroidViewModel(app) {
             folders = foldersOrNull
             state = FavState.FOLDERS
             AppLog.i("Fav", "收藏夹 ${folders.size} 个")
+          } catch (e: CancellationException) { throw e }
+          catch (e: Exception) { if (g == gen) { state = FavState.ERROR; AppLog.w("Fav", "收藏夹读取失败：${e.javaClass.simpleName}") } }
+          finally { if (g == gen) inFlight = false }
         }
     }
 
     /** 打开一个夹。 */
     fun open(folder: FavFolder) {
+        loadJob?.cancel()
+        gen++; error = null
         opened = folder
-        page = 1
+        page = 0
         hasMore = true
         items = emptyList()
         state = FavState.ITEMS_LOADING
@@ -99,30 +123,37 @@ class FavViewModel(app: Application) : AndroidViewModel(app) {
 
     /** 回到夹列表。 */
     fun backToFolders() {
+        loadJob?.cancel()
+        gen++; error = null; inFlight = false; loadingMore = false
         opened = null
         items = emptyList()
         state = FavState.FOLDERS
     }
 
+    /** 页面离开就取消网络，返回时保留已有内容和成功页码。 */
+    fun stopLoading() {
+        loadJob?.cancel(); gen++
+        inFlight = false; loadingMore = false
+        if (state == FavState.LOADING || state == FavState.ITEMS_LOADING) state = FavState.ERROR
+    }
+
     /** 夹内往下翻。 */
     fun loadMore() {
-        if (inFlight || loadingMore || !hasMore || opened == null) return
+        if (inFlight || loadingMore || !hasMore || opened == null || error != null) return
         fetchItems(first = false)
     }
 
     private fun fetchItems(first: Boolean) {
         val folder = opened ?: return
+        val g = gen
+        val requestPage = if (first) 1 else page + 1
         inFlight = true
         loadingMore = !first
         if (first) state = FavState.ITEMS_LOADING
-        viewModelScope.launch {
-            page = if (first) 1 else page + 1
-            val more = graph.api.favResources(folder.id, pn = page, ps = PAGE_SIZE)
-            if (opened?.id != folder.id) {      // 用户已经退出这个夹了，别把内容塞回去
-                inFlight = false
-                loadingMore = false
-                return@launch
-            }
+        loadJob = viewModelScope.launch {
+          try {
+            val result = graph.api.favResourcePage(folder.id, pn = requestPage, ps = PAGE_SIZE)
+            if (g != gen || opened?.id != folder.id) return@launch
             /*
              * ★ `null` = **请求失败**，和"这个夹真的没有内容"是两件事。
              *
@@ -133,19 +164,25 @@ class FavViewModel(app: Application) : AndroidViewModel(app) {
              * 现在第一页失败 → 进 ERROR 态（文案说"拿不到、可以重试"）；
              * 翻页失败 → 保留已经拿到的内容，什么都不改（下次滚动会再试）。
              */
-            if (more == null) {
+            if (result == null) {
+                error = if (items.isEmpty()) "收藏加载失败，请重试" else "收藏加载失败，已有内容仍保留，请重试"
                 if (first) state = FavState.ERROR
-                inFlight = false
-                loadingMore = false
-                AppLog.w("Fav", "${folder.title} 第 $page 页拿不到（网络或接口问题）")
+                AppLog.w("Fav", "${folder.title} 第 $requestPage 页拿不到（网络或接口问题）")
                 return@launch
             }
-            items = if (first) more else items + more.filter { m -> items.none { it.bvid == m.bvid } }
-            hasMore = more.isNotEmpty()
+            items = ((if (first) emptyList() else items) + result.items).distinctBy { it.bvid }
+            page = requestPage; error = null
+            hasMore = result.hasMore
             state = FavState.ITEMS
-            inFlight = false
-            loadingMore = false
-            AppLog.i("Fav", "${folder.title} 第 $page 页 ${more.size} 条（累计 ${items.size}）")
+            AppLog.i("Fav", "${folder.title} 第 $page 页 ${result.items.size} 条（累计 ${items.size}），还有页=$hasMore")
+          } catch (e: CancellationException) { throw e }
+          catch (e: Exception) {
+            if (g == gen) {
+                error = "收藏加载失败，请重试"
+                if (first) state = FavState.ERROR
+                AppLog.w("Fav", "收藏内容读取失败：${e.javaClass.simpleName}")
+            }
+          } finally { if (g == gen) { inFlight = false; loadingMore = false } }
         }
     }
 
@@ -157,9 +194,9 @@ class FavViewModel(app: Application) : AndroidViewModel(app) {
      */
     fun retry() {
         if (opened != null) {
-            inFlight = false
-            state = FavState.ITEMS_LOADING
-            fetchItems(first = true)
+            if (inFlight) return
+            error = null
+            fetchItems(first = page == 0)
         } else {
             load()
         }

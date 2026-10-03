@@ -17,8 +17,11 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Text
 import kotlinx.coroutines.delay
+import androidx.compose.ui.res.stringResource
+import top.bilitv.R
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -41,6 +44,9 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.ensureActive
 import top.bilitv.BiliTvApp
 import top.bilitv.data.model.MyProfile
 import top.bilitv.data.model.MyProfileResult
@@ -99,7 +105,7 @@ import androidx.compose.ui.graphics.Color
  * | 拿不到 | 接口结构变了 / 被风控 | 拿不到账号信息 | 「重新加载」 |
  *
  * 中间那一行是这一页独有的：`nav` 未登录时**既报 -101 又给一份 data**，
- * 所以"本机有凭证但服务端不认"这件事是**可判别的**，不必和"还没登录"混成一句。
+ * 所以"本机有凭证但服务端不认"这件事是**可判别的**，不必和stringResource(R.string.account_guest)混成一句。
  *
  * @param onNeedLogin 去扫码登录。
  * @param onOpenUp 打开我的主页（投稿列表，二级页面）。三个参数一起带过去 ——
@@ -124,6 +130,8 @@ fun MineScreen(
 
     // 侧栏切走再切回会重新进组合。带闸门，理由同 [FollowViewModel.load]。
     LaunchedEffect(Unit) { vm.load() }
+    DisposableEffect(vm) { onDispose { vm.stopLoading() } }
+    top.bilitv.ui.OnRefreshRequest { if (vm.state != MineState.LOADING) vm.reload() }
 
     val action = remember { FocusRequester() }
     val profile = vm.profile
@@ -136,7 +144,7 @@ fun MineScreen(
 
         Box(modifier = Modifier.fillMaxSize()) {
             when {
-                vm.state == MineState.LOADING ->
+                vm.state == MineState.LOADING && profile == null ->
                     CircularProgressIndicator(Modifier.align(Alignment.Center))
 
                 profile == null -> MineNotice(
@@ -147,9 +155,9 @@ fun MineScreen(
                         else -> onNeedLogin
                     },
                     actionLabel = when (vm.state) {
-                        MineState.EXPIRED -> "重新登录"
-                        MineState.ERROR -> "重新加载"
-                        else -> "扫码登录"
+                        MineState.EXPIRED -> stringResource(R.string.action_sign_in_again)
+                        MineState.ERROR -> stringResource(R.string.action_reload)
+                        else -> stringResource(R.string.account_scan)
                     },
                     requester = action,
                 )
@@ -164,6 +172,9 @@ fun MineScreen(
                     actionRequester = action,
                 )
             }
+
+            if (profile != null && vm.state == MineState.LOADING) CircularProgressIndicator(Modifier.align(Alignment.TopEnd).padding(16.dp))
+            vm.refreshError?.let { Text(it, color = theme.primary, modifier = Modifier.align(Alignment.BottomStart).padding(16.dp)) }
 
             /*
              * ★ 2026-09-30 少爷反馈 3：
@@ -187,7 +198,7 @@ fun MineScreen(
 
     /*
      * 焦点落点。`key = state`，因为**按钮是随状态换的**：
-     * 从"扫码登录"变成"查看我的投稿"之后要重新请求一次，否则焦点还挂在
+     * 从stringResource(R.string.account_scan)变成"查看我的投稿"之后要重新请求一次，否则焦点还挂在
      * 那个已经被组合掉的旧按钮上（表现就是"按方向键没反应"）。
      *
      * LOADING 时传 null 跳过 —— 那一刻屏幕上还没有可落焦点的东西，
@@ -210,12 +221,12 @@ private fun MineHeader() {
             ),
     ) {
         Text(
-            text = "我的",
+            text = stringResource(R.string.nav_mine),
             style = TextStyle(fontSize = AppType.H1, fontWeight = FontWeight.SemiBold),
             color = theme.textPrimary,
         )
         Text(
-            text = "账号与资料（观看历史、关注、设置在左边栏）",
+            text = stringResource(R.string.account_header_hint),
             style = TextStyle(fontSize = AppType.Caption),
             color = theme.textTertiary,
             modifier = Modifier.padding(top = 4.dp),
@@ -281,7 +292,7 @@ private fun MineProfileBody(
          * 显示"用户12345"这种编号看起来像真名，比空着更糟。
          */
         Text(
-            text = profile.name.ifBlank { "已登录的账号" },
+            text = profile.name.ifBlank { context.getString(R.string.account_name_fallback) },
             style = TextStyle(fontSize = AppType.H2, fontWeight = FontWeight.SemiBold),
             color = theme.textPrimary,
             maxLines = 1,
@@ -297,7 +308,7 @@ private fun MineProfileBody(
                     }
                     if (profile.vip) {
                         if (isNotEmpty()) append(" · ")
-                        append("大会员")
+                        append(context.getString(R.string.account_vip))
                     }
                 },
                 style = TextStyle(fontSize = AppType.Caption),
@@ -309,14 +320,14 @@ private fun MineProfileBody(
         Spacer(Modifier.height(22.dp))
 
         Row(horizontalArrangement = Arrangement.spacedBy(52.dp)) {
-            StatCell("关注", stat?.following)
-            StatCell("粉丝", stat?.follower)
+            StatCell(stringResource(R.string.account_following), stat?.following)
+            StatCell(stringResource(R.string.account_followers), stat?.follower)
             /*
              * ★ 2026-09-30 少爷（截图批注原话）：
              * 「**不要抓动态这个字段了，抓用户硬币数量**」。
              * 所以第三格由「动态」改成「硬币」（数据来自 `nav` 的 `money`）。
              */
-            StatCell("硬币", profile.coins.toLong())
+            StatCell(stringResource(R.string.account_coins), profile.coins.toLong())
         }
 
         /*
@@ -333,8 +344,8 @@ private fun MineProfileBody(
          *  2026-09-30 自检时改正。留一句说明，免得下次有人照着旧注释把入口删掉。）
          */
         Row(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
-            MineEntry(icon = RailIcons.Follow, label = "关注", onClick = onOpenFollow)
-            MineEntry(icon = RailIcons.Star, label = "收藏", onClick = onOpenFav)
+            MineEntry(icon = RailIcons.Follow, label = stringResource(R.string.account_following), onClick = onOpenFollow)
+            MineEntry(icon = RailIcons.Star, label = stringResource(R.string.nav_favorites), onClick = onOpenFav)
 
         }
 
@@ -347,7 +358,7 @@ private fun MineProfileBody(
          *   点击**不直接退**，只打开确认弹窗（反馈 3）。
          */
         FilledActionButton(
-            text = "退出登录并清除缓存",
+            text = stringResource(R.string.account_logout),
             onClick = onLogout,
             modifier = Modifier
                 .focusRequester(actionRequester)
@@ -466,12 +477,12 @@ private fun MineNotice(
 
         Text(
             text = when (state) {
-                MineState.NEED_LOGIN -> "还没登录"
-                MineState.EXPIRED -> "登录已过期"
-                MineState.ERROR -> "拿不到账号信息"
+                MineState.NEED_LOGIN -> stringResource(R.string.account_guest)
+                MineState.EXPIRED -> stringResource(R.string.dynamic_expired)
+                MineState.ERROR -> stringResource(R.string.account_unavailable)
                 // 不该走到这里（调用方只在 profile 为空且不在加载中时才渲染这一屏）。
                 // 留一句话而不是留空白：万一日后哪里改错了，屏幕上至少有一行字能指认现场。
-                MineState.LOADING, MineState.READY -> "状态异常，回到侧栏再进一次这一页"
+                MineState.LOADING, MineState.READY -> stringResource(R.string.dynamic_reopen)
             },
             style = TextStyle(fontSize = AppType.H2, fontWeight = FontWeight.SemiBold),
             color = theme.textPrimary,
@@ -479,13 +490,13 @@ private fun MineNotice(
         Text(
             text = when (state) {
                 MineState.NEED_LOGIN ->
-                    "登录后才能看番剧/影视、1080P 以上画质、观看记录与关注。扫码登录，电视上不用打字。"
+                    stringResource(R.string.account_guest_hint)
                 MineState.EXPIRED ->
-                    "这台设备上存的登录凭证服务端已经不认了（改了密码、或者在别处退过登录都会这样）。重新扫一次码就行。"
+                    stringResource(R.string.account_expired_hint)
                 MineState.ERROR ->
-                    "接口可能变了或网络不通。已经登录了还是这样，就是服务端的问题，看日志能有线索。"
+                    stringResource(R.string.account_error_hint)
                 MineState.LOADING, MineState.READY ->
-                    "这一屏本来不该出现，麻烦把日志发我。"
+                    stringResource(R.string.account_reopen_hint)
             },
             style = TextStyle(fontSize = AppType.Body3, lineHeight = 22.sp),
             color = theme.textSecondary,
@@ -522,9 +533,9 @@ enum class MineState { LOADING, NEED_LOGIN, EXPIRED, ERROR, READY }
  * 1. **本机没有凭证 → 直接下结论，一个请求都不发。**
  *    发了也是 `-101`，白等一个网络往返，日志里还多一条没信息量的错误。
  * 2. **本机有凭证，服务端 `isLogin=false` → 凭证过期。**
- *    这就是 [MineState.EXPIRED] 存在的理由：它和"还没登录"给用户的
+ *    这就是 [MineState.EXPIRED] 存在的理由：它和stringResource(R.string.account_guest)给用户的
  *    下一步动作其实一样（重新扫码），但**说的话不一样** ——
- *    一个人明明登录过，你告诉他"还没登录"，他会觉得这 App 记不住事。
+ *    一个人明明登录过，你告诉他stringResource(R.string.account_guest)，他会觉得这 App 记不住事。
  * 3. 拿不到结构 → [MineState.ERROR]。
  */
 class MineViewModel(app: Application) : AndroidViewModel(app) {
@@ -539,11 +550,20 @@ class MineViewModel(app: Application) : AndroidViewModel(app) {
         private set
 
     private var inFlight = false
+    private var generation = 0
+    private var fetchJob: Job? = null
+    var refreshError by mutableStateOf<String?>(null); private set
 
     /** 进页面时调用。带"已经取到过就别重取"的闸，但登录态变过就必须重取。 */
     fun load() {
         if (state == MineState.READY && graph.api.isLoggedIn()) return
         fetch()
+    }
+
+    fun stopLoading() {
+        ++generation
+        fetchJob?.cancel(); fetchJob = null; inFlight = false
+        if (profile != null && state == MineState.LOADING) state = MineState.READY
     }
 
     /** 「重新加载」/「重新登录」后回来时用。**绕过闸门**，否则按了没反应。 */
@@ -566,6 +586,9 @@ class MineViewModel(app: Application) : AndroidViewModel(app) {
      * 一个缓存目录删不掉，不该让用户退不出去。
      */
     fun logoutAndClear() {
+        ++generation
+        fetchJob?.cancel()
+        refreshError = null
         graph.api.logout()
         runCatching {
             val loader = coil.Coil.imageLoader(getApplication())
@@ -576,6 +599,7 @@ class MineViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun reload() {
+        fetchJob?.cancel()
         inFlight = false
         fetch()
     }
@@ -583,10 +607,12 @@ class MineViewModel(app: Application) : AndroidViewModel(app) {
     private fun fetch() {
         if (inFlight) return
         inFlight = true
+        val requestGeneration = ++generation
+        refreshError = null
 
         /*
          * 未登录：**同步**给出结论。
-         * 放进协程里会先闪一下转圈再变成"还没登录"，看着像刚失败。
+         * 放进协程里会先闪一下转圈再变成stringResource(R.string.account_guest)，看着像刚失败。
          */
         if (!graph.api.isLoggedIn()) {
             profile = null
@@ -598,36 +624,52 @@ class MineViewModel(app: Application) : AndroidViewModel(app) {
         }
 
         state = MineState.LOADING
-        viewModelScope.launch {
-            when (val r = graph.api.myProfile()) {
-                is MyProfileResult.Ok -> {
-                    profile = r.profile
-                    // 计数是**第二条**请求：它挂了不该连累整页（上面已经有人了），
-                    // 所以失败就让它三个格子显示 --
-                    stat = graph.api.myStat()
-                    state = MineState.READY
-                    AppLog.i(
-                        "Mine",
-                        "资料：${r.profile.name.ifBlank { "(无昵称)" }} uid=${r.profile.mid} " +
-                            "关注=${stat?.following} 粉丝=${stat?.follower}",
-                    )
-                }
+        fetchJob = viewModelScope.launch {
+            try {
+                val result = graph.api.myProfile()
+                coroutineContext.ensureActive()
+                if (requestGeneration != generation) return@launch
+                when (val r = result) {
+                    is MyProfileResult.Ok -> {
+                        val oldProfile = profile
+                        // 计数是**第二条**请求：它挂了不该连累整页（上面已经有人了），
+                        // 所以失败就让它三个格子显示 --
+                        val freshStat = graph.api.myStat()
+                        coroutineContext.ensureActive()
+                        if (requestGeneration != generation) return@launch
+                        profile = r.profile
+                        stat = freshStat ?: stat.takeIf { oldProfile?.mid == r.profile.mid }
+                        state = MineState.READY
+                        if (freshStat == null) refreshError = graph.getString(R.string.account_stats_refresh_failed)
+                        AppLog.i(
+                            "Mine",
+                            "资料：${r.profile.name.ifBlank { "(无昵称)" }} uid=${r.profile.mid} " +
+                                "关注=${stat?.following} 粉丝=${stat?.follower}",
+                        )
+                    }
 
-                MyProfileResult.NotLoggedIn -> {
-                    profile = null
-                    stat = null
-                    state = MineState.EXPIRED
-                    AppLog.w("Mine", "本机有凭证，但服务端说没登录（凭证过期？）")
-                }
+                    MyProfileResult.NotLoggedIn -> {
+                        profile = null
+                        stat = null
+                        state = MineState.EXPIRED
+                        AppLog.w("Mine", "本机有凭证，但服务端说没登录（凭证过期？）")
+                    }
 
-                MyProfileResult.Unsupported -> {
-                    profile = null
-                    stat = null
-                    state = MineState.ERROR
-                    AppLog.w("Mine", "账号资料拿不到（接口结构变了或被风控）")
+                    MyProfileResult.Unsupported -> {
+                        state = if (profile == null) MineState.ERROR else MineState.READY
+                        refreshError = if (profile == null) null else graph.getString(R.string.account_refresh_failed)
+                        AppLog.w("Mine", "账号资料拿不到（接口结构变了或被风控）")
+                    }
                 }
+            } catch (e: CancellationException) { throw e }
+            catch (_: Exception) {
+                if (requestGeneration == generation) {
+                    state = if (profile == null) MineState.ERROR else MineState.READY
+                    refreshError = if (profile == null) null else graph.getString(R.string.account_refresh_failed)
+                }
+            } finally {
+                if (requestGeneration == generation) inFlight = false
             }
-            inFlight = false
         }
     }
 }
@@ -641,7 +683,7 @@ class MineViewModel(app: Application) : AndroidViewModel(app) {
  * 1. **默认焦点在「取消」上** —— 破坏性操作的默认选项必须是**不做**。
  *    遥控器上误按一次 OK 就直接确认，是少爷今天已经踩过的坑
  *    （原话：「怎么我摸了一下就把账号退掉了」）。
- * 2. 文案要**说清后果**：清的是登录凭证和图片缓存；收藏/关注/历史在账号里，不会丢。
+ * 2. 文案要**说清后果**：清的是登录凭证和图片缓存；账号收藏/关注不删除，本机观看记录保留。
  *    不说清，用户不敢按 —— 或者按完才发现要重新扫码，那更糟。
  */
 @Composable
@@ -665,13 +707,12 @@ private fun LogoutConfirmDialog(onCancel: () -> Unit, onConfirm: () -> Unit) {
             verticalArrangement = Arrangement.spacedBy(14.dp),
         ) {
             Text(
-                text = "退出登录并清除缓存？",
+                text = stringResource(R.string.account_logout_question),
                 style = TextStyle(fontSize = AppType.H3, fontWeight = FontWeight.SemiBold),
                 color = theme.textPrimary,
             )
             Text(
-                text = "会清掉本机的登录凭证和图片缓存，下次要重新扫码登录。\n" +
-                        "收藏、关注、历史记录都存在账号里，不会丢。",
+                text = stringResource(R.string.account_logout_hint),
                 style = TextStyle(fontSize = AppType.Body3),
                 color = theme.textSecondary,
                 textAlign = TextAlign.Center,
@@ -679,11 +720,11 @@ private fun LogoutConfirmDialog(onCancel: () -> Unit, onConfirm: () -> Unit) {
             Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
                 // ★ 默认焦点给「取消」—— 破坏性操作的默认选项是不做
                 FilledActionButton(
-                    text = "取消",
+                    text = stringResource(R.string.action_cancel),
                     onClick = onCancel,
                     modifier = Modifier.focusRequester(cancelRequester),
                 )
-                FilledActionButton(text = "退出并清除", onClick = onConfirm)
+                FilledActionButton(text = stringResource(R.string.account_logout_confirm), onClick = onConfirm)
             }
         }
     }

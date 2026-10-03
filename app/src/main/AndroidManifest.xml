@@ -45,21 +45,6 @@
             </intent-filter>
         </activity>
 
-        <!--
-          日志分享出口。
-
-          App 跑在电视和手机上，两边都没有 adb 可接，出问题时只能靠「分享」把日志带出来。
-          authorities 用 applicationId 拼，避免和别的应用撞车。
-        -->
-        <provider
-            android:name="androidx.core.content.FileProvider"
-            android:authorities="${applicationId}.fileprovider"
-            android:exported="false"
-            android:grantUriPermissions="true">
-            <meta-data
-                android:name="android.support.FILE_PROVIDER_PATHS"
-                android:resource="@xml/file_paths" />
-        </provider>
     </application>
 
 </manifest>

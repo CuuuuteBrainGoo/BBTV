@@ -106,28 +106,13 @@ fun TvCard(
     var focused by remember { mutableStateOf(false) }
 
 
-    val scale by animateFloatAsState(
-        targetValue = when {
-            focused -> scaleTarget
-            pressed -> PRESSED_SCALE
-            else -> 1f
-        },
-        animationSpec = spring(dampingRatio = 0.7f, stiffness = 700f),
-        label = "tvCardScale",
-    )
-    val border by animateColorAsState(
-        targetValue = when {
-            focused -> theme.focusRing
-            pressed -> theme.focusRing.copy(alpha = 0.7f)
-            else -> theme.divider
-        },
-        label = "tvCardBorder",
-    )
-    // 焦点态底色也跟着动画：经典皮肤会顺带把卡片提亮一档，影院皮肤原地不动
-    val fill by animateColorAsState(
-        targetValue = if (focused) theme.focusSurface else cardBackground,
-        label = "tvCardFill",
-    )
+    val scaleValue = when { focused -> scaleTarget; pressed -> PRESSED_SCALE; else -> 1f }
+    val scale = if (theme.animations) animateFloatAsState(scaleValue,
+        animationSpec = spring(dampingRatio = .7f, stiffness = 700f), label = "tvCardScale").value else scaleValue
+    val borderValue = when { focused -> theme.focusRing; pressed -> theme.focusRing.copy(alpha = .7f); else -> theme.divider }
+    val border = if (theme.animations) animateColorAsState(borderValue, label = "tvCardBorder").value else borderValue
+    val fillValue = if (focused) theme.focusSurface else cardBackground
+    val fill = if (theme.animations) animateColorAsState(fillValue, label = "tvCardFill").value else fillValue
 
     Box(
         modifier = modifier
@@ -177,6 +162,8 @@ private const val PRESSED_SCALE = 0.95f
 class NavigationFocus(initialFocus: StartupFocus? = null) {
     var pendingStartup by mutableStateOf(initialFocus)
     var confirmTabs by mutableStateOf(true)
+    var contentTarget by mutableStateOf<FocusRequester?>(null)
+    var rightToCards by mutableStateOf(false)
     var railFocused by mutableStateOf(false)
     var tabsFocused by mutableStateOf(false)
     val blocksAutoFocus: Boolean get() = pendingStartup != null || railFocused || tabsFocused

@@ -294,4 +294,12 @@ class HistoryTest {
         // 进度超过时长（换了源、时长变短了）不能画出超过 100% 的条
         assertEquals(1f, entry("A", progressMs = 900_000L, durationMs = 600_000L).fraction)
     }
+    @Test fun `剧集身份跨存档和旧记录安全迁移`() {
+        val current = HistoryEntry(key = "#7#9", cid = 7, epId = 9, seasonId = 123, progressMs = 30000)
+        assertEquals(current, History.decode(History.encode(listOf(current))).single())
+        val old = History.decode("[{\"k\":\"#7#9\",\"c\":7,\"e\":9}]").single()
+        assertEquals(0L, old.seasonId)
+        assertEquals(123L, History.mergeFields(current, old).seasonId)
+        assertEquals(0L, History.mergeFields(current, old).progressMs)
+    }
 }

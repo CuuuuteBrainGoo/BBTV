@@ -69,4 +69,10 @@ class NavTargetTest {
             (Screen.targetForVideoCard(false, weird) as Screen.Player).bvid,
         )
     }
+    @Test fun playbackExitUsesCurrentVideoOrSeasonWithSafeFallback() {
+        assertEquals(null, Screen.targetAfterPlayback(false, bvid, 12))
+        assertEquals(null, Screen.targetAfterPlayback(true, "", 0))
+        assertEquals(Screen.Detail("BVcurrent", 9, "收藏"), Screen.targetAfterPlayback(true, "BVcurrent", 0, 9, "收藏"))
+        assertEquals(Screen.PgcDetail(12), Screen.targetAfterPlayback(true, "", 12))
+    }
 }

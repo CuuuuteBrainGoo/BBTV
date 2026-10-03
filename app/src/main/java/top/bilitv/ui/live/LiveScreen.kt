@@ -1,20 +1,25 @@
 package top.bilitv.ui.live
 
+import top.bilitv.R
+import androidx.compose.ui.res.stringResource
+
+import top.bilitv.ui.theme.pageBackground
+
+import top.bilitv.ui.components.verticalScrollbar
 import android.app.Application
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items as gridItems
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
@@ -23,6 +28,7 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -35,6 +41,8 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
+import top.bilitv.ui.components.cappedCover
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.TextStyle
@@ -42,6 +50,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
@@ -49,6 +58,8 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.ensureActive
 import top.bilitv.BiliTvApp
 import top.bilitv.data.model.LiveArea
 import top.bilitv.data.model.LiveRoom
@@ -59,6 +70,10 @@ import top.bilitv.ui.components.SectionTabBar
 import top.bilitv.ui.components.TvCard
 import top.bilitv.ui.components.fixedScheme
 import top.bilitv.ui.components.formatCount
+import top.bilitv.ui.theme.gridCells
+import androidx.compose.foundation.lazy.grid.GridItemSpan
+import top.bilitv.ui.components.LoadFeedback
+import kotlinx.coroutines.CancellationException
 import top.bilitv.ui.theme.AppTheme
 import top.bilitv.ui.theme.AppType
 import top.bilitv.util.AppLog
@@ -102,14 +117,17 @@ import top.bilitv.util.AppLog
 @Composable
 fun LiveScreen(onOpen: (LiveRoom) -> Unit) {
     val vm: LiveViewModel = viewModel()
+    val gridState = rememberLazyGridState()
     val theme = AppTheme.current
     LaunchedEffect(Unit) { vm.load() }
+    DisposableEffect(vm) { onDispose { vm.stopLoading() } }
+    top.bilitv.ui.OnRefreshRequest { if (!vm.loading) vm.reload() }
 
     val firstTile = remember { FocusRequester() }
     val retryButton = remember { FocusRequester() }
     val rooms = vm.rooms
 
-    Column(modifier = Modifier.fillMaxSize().background(theme.background)) {
+    Column(modifier = Modifier.fillMaxSize().background(theme.pageBackground)) {
         LiveHeader(
             total = rooms.size,
             living = rooms.count { it.isLiving },
@@ -128,9 +146,15 @@ fun LiveScreen(onOpen: (LiveRoom) -> Unit) {
             ),
         )
 
-        Box(modifier = Modifier.fillMaxSize()) {
+        BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+            // Header, tabs and system insets have already consumed their actual space.
+            val textHeight = with(LocalDensity.current) { 24.sp.toDp() + AppType.Small.toDp() * 1.4f + 14.dp }
+            val coverLimit = (maxHeight - 6.dp - theme.screenPadding - textHeight).coerceAtLeast(1.dp)
             when {
-                vm.loading -> CircularProgressIndicator(Modifier.align(Alignment.Center))
+                vm.loading && rooms.isEmpty() -> CircularProgressIndicator(Modifier.align(Alignment.Center))
+
+                rooms.isEmpty() && vm.error != null -> LoadFeedback(false, vm.error, vm::reload,
+                    Modifier.align(Alignment.Center).padding(24.dp).focusRequester(retryButton))
 
                 rooms.isEmpty() -> LiveNotice(
                     state = vm.state,
@@ -139,8 +163,8 @@ fun LiveScreen(onOpen: (LiveRoom) -> Unit) {
                 )
 
                 else -> LazyVerticalGrid(
-                    columns = GridCells.Fixed(theme.cardColumns),
-                    state = rememberLazyGridState(),
+                    columns = theme.gridCells(),
+                    state = gridState,
                     contentPadding = PaddingValues(
                         start = theme.screenPadding,
                         end = theme.screenPadding,
@@ -149,15 +173,19 @@ fun LiveScreen(onOpen: (LiveRoom) -> Unit) {
                     ),
                     horizontalArrangement = Arrangement.spacedBy(theme.cardGap),
                     verticalArrangement = Arrangement.spacedBy(theme.rowGap),
-                    modifier = Modifier.fillMaxSize(),
+                    modifier = Modifier.fillMaxSize().verticalScrollbar(gridState),
                 ) {
                     gridItems(rooms, key = { it.roomId }) { room ->
                         LiveTile(
                             room = room,
+                            coverLimit = coverLimit,
                             onClick = { onOpen(room) },
                             modifier = Modifier.fillMaxWidth(),
                             focusRequester = firstTile.takeIf { room.roomId == rooms.first().roomId },
                         )
+                    }
+                    if (vm.loading || vm.error != null) item(span = { GridItemSpan(maxLineSpan) }) {
+                        LoadFeedback(vm.loading, vm.error, vm::reload)
                     }
                 }
             }
@@ -191,15 +219,15 @@ private fun LiveHeader(total: Int, living: Int, showCount: Boolean) {
             ),
     ) {
         Text(
-            text = "直播",
+            text = stringResource(R.string.nav_live),
             style = TextStyle(fontSize = AppType.H1, fontWeight = FontWeight.SemiBold),
             color = theme.textPrimary,
         )
         Text(
             text = when {
-                !showCount -> "选中一个直播间直接进"
-                living > 0 -> "正在直播 $living 个房间 · 选中直接进"
-                else -> "共 $total 个房间 · 选中直接进"
+                !showCount -> stringResource(R.string.live_header_hint)
+                living > 0 -> stringResource(R.string.live_living_rooms, living)
+                else -> stringResource(R.string.live_total_rooms, total)
             },
             style = TextStyle(fontSize = AppType.Caption),
             color = theme.textTertiary,
@@ -238,6 +266,7 @@ private fun LiveHeader(total: Int, living: Int, showCount: Boolean) {
 @Composable
 private fun LiveTile(
     room: LiveRoom,
+    coverLimit: Dp,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
     focusRequester: FocusRequester? = null,
@@ -249,14 +278,14 @@ private fun LiveTile(
         append(room.title)
         append("，").append(room.uname)
         when (room.liveStatus) {
-            LiveStatus.LIVING -> append("，正在直播")
-            LiveStatus.RERUN -> append("，轮播中")
-            LiveStatus.OFFLINE -> append("，未开播")
+            LiveStatus.LIVING -> append(context.getString(R.string.live_living_description))
+            LiveStatus.RERUN -> append(context.getString(R.string.live_rerun_description))
+            LiveStatus.OFFLINE -> append(context.getString(R.string.live_offline_description))
             // 不知道就什么都不说。读屏多一句"开播状态未知"是噪音，
             // 念一句"未开播"则是撒谎
             else -> Unit
         }
-        if (room.online > 0) append("，${formatCount(room.online)}人气")
+        if (room.online > 0) append(context.getString(R.string.live_popularity_description, formatCount(room.online)))
     }
 
     TvCard(
@@ -268,7 +297,7 @@ private fun LiveTile(
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .aspectRatio(16f / 9f)
+                    .cappedCover(16f / 9f, coverLimit)
                     .clip(RoundedCornerShape(theme.cardCorner))
                     .background(theme.surfaceHigh),
             ) {
@@ -280,7 +309,7 @@ private fun LiveTile(
                         .crossfade(true)
                         .build(),
                     contentDescription = null,
-                    contentScale = ContentScale.Crop,
+                    contentScale = ContentScale.Fit,
                     modifier = Modifier.fillMaxSize(),
                 )
 
@@ -291,7 +320,7 @@ private fun LiveTile(
 
                 if (room.online > 0) {
                     Text(
-                        text = "${formatCount(room.online)}人气",
+                        text = stringResource(R.string.live_popularity, formatCount(room.online)),
                         style = TextStyle(fontSize = AppType.Tiny, fontWeight = FontWeight.Medium),
                         color = Color.White,
                         modifier = Modifier
@@ -322,10 +351,11 @@ private fun LiveTile(
             Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(horizontal = 4.dp)) {
                 Text(
                     text = room.uname,
-                    style = TextStyle(fontSize = AppType.Small),
+                    style = TextStyle(fontSize = AppType.Small, lineHeight = AppType.Small * 1.4f),
                     color = theme.textTertiary,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f),
                 )
                 // 分区名：只在有内容时才加那一段 —— 空的名字会显示成「主播 · 」
                 val area = listOf(room.parentAreaName, room.areaName)
@@ -334,10 +364,11 @@ private fun LiveTile(
                 if (area.isNotBlank()) {
                     Text(
                         text = " · $area",
-                        style = TextStyle(fontSize = AppType.Small),
+                        style = TextStyle(fontSize = AppType.Small, lineHeight = AppType.Small * 1.4f),
                         color = theme.textTertiary,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(.65f, fill = false),
                     )
                 }
             }
@@ -355,13 +386,13 @@ private fun LiveTile(
 @Composable
 private fun LiveBadge(status: Int, modifier: Modifier = Modifier) {
     val (label, color) = when (status) {
-        LiveStatus.LIVING -> "直播中" to LIVE_RED
-        LiveStatus.RERUN -> "轮播" to Color(0xCC55555F)
-        LiveStatus.OFFLINE -> "未开播" to Color(0xAA2A2A33)
+        LiveStatus.LIVING -> R.string.live_living to LIVE_RED
+        LiveStatus.RERUN -> R.string.live_rerun to Color(0xCC55555F)
+        LiveStatus.OFFLINE -> R.string.live_offline to Color(0xAA2A2A33)
         else -> return
     }
     Text(
-        text = label,
+        text = stringResource(label),
         style = TextStyle(fontSize = AppType.Tiny, fontWeight = FontWeight.Medium),
         color = Color.White,
         modifier = modifier
@@ -391,21 +422,17 @@ private fun LiveNotice(state: LiveState, onRetry: () -> Unit, requester: FocusRe
     ) {
         Text(
             text = when (state) {
-                LiveState.ERROR -> "拿不到直播列表"
-                LiveState.EMPTY -> "这个分区现在没有人在播"
-                else -> "状态异常，回到侧栏再进一次这一页"
+                LiveState.ERROR -> stringResource(R.string.live_unavailable)
+                LiveState.EMPTY -> stringResource(R.string.live_empty)
+                else -> stringResource(R.string.live_state_unavailable)
             },
             style = TextStyle(fontSize = AppType.H2, fontWeight = FontWeight.SemiBold),
             color = theme.textPrimary,
         )
         Text(
             text = when (state) {
-                LiveState.ERROR ->
-                    "接口可能变了或网络不通。B 站的直播接口分新旧两套，" +
-                        "我们用的是能通的老接口，它也可能哪天被关掉 —— 到时候看日志能看出来。"
-                LiveState.EMPTY ->
-                    "换个分区看看，或者等一会儿再来。"
-                else -> "这一屏本来不该出现，麻烦把日志发我。"
+                LiveState.EMPTY -> stringResource(R.string.live_empty_hint)
+                else -> stringResource(R.string.live_reload_hint)
             },
             style = TextStyle(fontSize = AppType.Body3, lineHeight = 22.sp),
             color = theme.textSecondary,
@@ -420,7 +447,7 @@ private fun LiveNotice(state: LiveState, onRetry: () -> Unit, requester: FocusRe
          * 空列表上按遥控器方向键毫无反应（历史页在 2026-09-29 踩过一次，见 `docs/11`）。
          */
         FilledActionButton(
-            text = "重新加载",
+            text = stringResource(R.string.action_reload),
             onClick = onRetry,
             modifier = Modifier
                 .focusRequester(requester)
@@ -469,36 +496,55 @@ class LiveViewModel(app: Application) : AndroidViewModel(app) {
         private set
 
     /** 标签文字。前两个固定是「关注」「推荐」，后面是大区 */
-    val tabLabels: List<String> get() = listOf("关注", "推荐") + areas.map { it.name }
+    val tabLabels: List<String> get() = listOf(graph.getString(R.string.live_following), graph.getString(R.string.section_recommend)) + areas.map { it.name }
 
-    private var inFlight = false
+    private var fetchJob: Job? = null
+    private var initialized = false
+    private var loadedLogin: Boolean? = null
     private var areasLoaded = false
+    private var generation = 0
+    var error by mutableStateOf<String?>(null); private set
 
     /** 当前选中的分区下标 → 给"重新加载"用的。`reload()` 必须知道重取哪一页 */
-    fun load() = fetch()
+    fun load() {
+        val loggedIn = graph.api.isLoggedIn()
+        if (loadedLogin != loggedIn) {
+            rooms = emptyList(); initialized = false; loadedLogin = loggedIn
+        }
+        if (!initialized && fetchJob?.isActive != true) fetch()
+    }
 
-    /** 「重新加载」。`inFlight` 要先清掉，否则按了没反应 */
+    fun stopLoading() {
+        ++generation
+        fetchJob?.cancel(); fetchJob = null; loading = false
+    }
+
+    /** Explicit refresh cancels the previous read while keeping already loaded rooms. */
     fun reload() {
-        inFlight = false
         fetch()
     }
 
     fun selectTab(index: Int) {
+        if (index !in tabLabels.indices) return
         if (index == tabIndex) return
         tabIndex = index
         rooms = emptyList()
-        inFlight = false
+        initialized = false
         fetch()
     }
 
     private fun fetch() {
-        if (inFlight) return
-        inFlight = true
-        loading = true
-        viewModelScope.launch {
-            // 分区表只取一次。失败也不重试 —— 没有分区标签，推荐流照样能看
+        fetchJob?.cancel()
+        loading = true; error = null
+        val g = ++generation
+        val index = tabIndex
+        fetchJob = viewModelScope.launch {
+            try {
+            // Keep a successful area table; an unavailable table does not block the room list.
             if (!areasLoaded) {
                 val a = graph.api.liveAreas()
+                coroutineContext.ensureActive()
+                if (g != generation) return@launch
                 if (a.isNotEmpty()) {
                     areas = a
                     areasLoaded = true
@@ -508,12 +554,11 @@ class LiveViewModel(app: Application) : AndroidViewModel(app) {
                 }
             }
 
-            val index = tabIndex
             val list = if (index == 0) {
                 // 「关注」——没登录时接口给 -101，列表为空，界面按"空"处理
-                graph.api.liveFollowing()
+                graph.api.liveFollowing(strict = true)
             } else if (index == 1) {
-                graph.api.liveRecommend()
+                graph.api.liveRecommend(strict = true)
             } else {
                 // 下标 0/1 是「关注」「推荐」，所以大区下标要减 2
                 val area = areas.getOrNull(index - 2)
@@ -521,26 +566,27 @@ class LiveViewModel(app: Application) : AndroidViewModel(app) {
                     AppLog.w("Live", "分区下标 $index 越界（只有 ${areas.size} 个大区）")
                     emptyList()
                 } else {
-                    graph.api.liveAreaRooms(parentAreaId = area.id)
+                    graph.api.liveAreaRooms(parentAreaId = area.id, strict = true)
                 }
             }
 
-            /*
-             * ★ 空列表要分两种说。
-             *
-             * 冷门分区"现在没人在播"是**正常现象**，说成"接口出问题了"会让用户
-             * 白白重试；而接口真挂了说成"没人播"则会让用户一直等下去。
-             * 判据只有一个：推荐流（下标 0）也空 → 那是接口的问题。
-             */
-            rooms = list
+            coroutineContext.ensureActive()
+            if (g != generation) return@launch
+            rooms = list.distinctBy { it.roomId }
             state = when {
                 list.isNotEmpty() -> LiveState.READY
-                index > 0 -> LiveState.EMPTY
-                else -> LiveState.ERROR
+                else -> LiveState.EMPTY
             }
-            loading = false
-            inFlight = false
+            initialized = true
             AppLog.i("Live", "分区[$index] 房间 ${list.size} 个（状态=$state）")
+            } catch (e: CancellationException) { throw e }
+            catch (e: Exception) {
+                if (g == generation) {
+                    error = graph.getString(if (index == 0 && !graph.api.isLoggedIn()) R.string.live_following_sign_in else R.string.live_load_failed)
+                    state = if (rooms.isEmpty()) LiveState.ERROR else LiveState.READY
+                    AppLog.w("Live", e.javaClass.simpleName)
+                }
+            } finally { if (g == generation) loading = false }
         }
     }
 }

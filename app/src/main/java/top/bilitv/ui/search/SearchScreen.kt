@@ -1,8 +1,13 @@
 package top.bilitv.ui.search
 
+import top.bilitv.ui.components.verticalScrollbar
 import android.app.Application
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.foundation.background
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -14,7 +19,6 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items as gridItems
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -23,8 +27,11 @@ import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Text
+import androidx.compose.ui.res.stringResource
+import top.bilitv.R
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -52,12 +59,19 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.compose.viewModel
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.ensureActive
 import top.bilitv.BiliTvApp
 import top.bilitv.data.model.FeedItem
 import top.bilitv.ui.components.FeedCard
 import top.bilitv.ui.components.RequestFocusOnAppear
 import top.bilitv.ui.components.focusRing
 import top.bilitv.ui.components.observeFocus
+import top.bilitv.ui.theme.gridCells
+import androidx.compose.foundation.lazy.grid.GridItemSpan
+import top.bilitv.ui.components.LoadFeedback
+import top.bilitv.ui.components.FilledActionButton
+import kotlinx.coroutines.CancellationException
 import top.bilitv.ui.theme.AppTheme
 import top.bilitv.ui.theme.AppType
 import top.bilitv.util.AppLog
@@ -83,10 +97,13 @@ import top.bilitv.util.AppLog
 @Composable
 fun SearchScreen(onOpen: (String) -> Unit) {
     val vm: SearchViewModel = viewModel()
+    val gridState = androidx.compose.foundation.lazy.grid.rememberLazyGridState()
     val theme = AppTheme.current
 
     // 进页面就把热搜拉回来。失败也不报错，搜索本身不依赖它。
-    LaunchedEffect(Unit) { vm.loadHot() }
+    LaunchedEffect(Unit) { vm.enter() }
+    DisposableEffect(vm) { onDispose { vm.stopLoading() } }
+    top.bilitv.ui.OnRefreshRequest { vm.reload() }
 
     val firstHot = remember { FocusRequester() }
 
@@ -105,10 +122,11 @@ fun SearchScreen(onOpen: (String) -> Unit) {
 
         Box(modifier = Modifier.fillMaxSize()) {
             when {
-                vm.loading -> CircularProgressIndicator(Modifier.align(Alignment.Center))
+                (vm.loading || vm.loadingMore) && vm.results.isEmpty() -> CircularProgressIndicator(Modifier.align(Alignment.Center))
 
                 vm.results.isNotEmpty() -> LazyVerticalGrid(
-                    columns = GridCells.Fixed(theme.cardColumns),
+                    state = gridState,
+                    columns = theme.gridCells(),
                     contentPadding = PaddingValues(
                         start = theme.screenPadding,
                         end = theme.screenPadding,
@@ -116,7 +134,7 @@ fun SearchScreen(onOpen: (String) -> Unit) {
                     ),
                     horizontalArrangement = Arrangement.spacedBy(theme.cardGap),
                     verticalArrangement = Arrangement.spacedBy(theme.rowGap),
-                    modifier = Modifier.fillMaxSize(),
+                    modifier = Modifier.fillMaxSize().verticalScrollbar(gridState),
                 ) {
                     gridItems(vm.results, key = { it.bvid }) { item ->
                         FeedCard(
@@ -125,17 +143,29 @@ fun SearchScreen(onOpen: (String) -> Unit) {
                             modifier = Modifier.fillMaxWidth(),
                         )
                     }
+                    if (vm.loading || vm.loadingMore || vm.error != null || vm.hasMore) item(span = { GridItemSpan(maxLineSpan) }) {
+                        Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
+                            LoadFeedback(vm.loading || vm.loadingMore, vm.error, vm::retry)
+                            if (!vm.loading && !vm.loadingMore && vm.error == null && vm.hasMore)
+                                FilledActionButton(stringResource(R.string.action_load_more), vm::loadMore, Modifier.padding(vertical = 12.dp))
+                        }
+                    }
                 }
 
-                vm.error != null -> Hint(vm.error!!)
+                vm.error != null -> LoadFeedback(false, vm.error, vm::retry,
+                    Modifier.align(Alignment.Center).padding(24.dp))
 
-                vm.searched -> Hint("没有找到「${vm.lastKeyword}」相关的视频，换个词试试")
+                vm.searched && vm.hasMore -> FilledActionButton(stringResource(R.string.search_continue), vm::loadMore,
+                    Modifier.align(Alignment.Center))
+                vm.searched -> Hint(stringResource(R.string.search_empty, vm.lastKeyword))
 
-                else -> HotWords(
-                    words = vm.hotWords,
-                    onPick = { vm.searchWith(it) },
-                    firstFocusRequester = firstHot,
-                )
+                else -> Column(Modifier.fillMaxSize()) {
+                    Box(Modifier.weight(1f)) {
+                        HotWords(vm.hotWords, { vm.searchWith(it) }, firstHot)
+                    }
+                    if (vm.hotError != null) LoadFeedback(false, vm.hotError, { vm.loadHot(force = true) },
+                        Modifier.padding(horizontal = theme.screenPadding))
+                }
             }
         }
     }
@@ -163,10 +193,8 @@ private fun SearchBar(
     var focused by remember { mutableStateOf(false) }
 
     val shape = RoundedCornerShape(8.dp)
-    val border by animateColorAsState(
-        targetValue = if (focused) theme.focusRing else theme.divider,
-        label = "searchBarBorder",
-    )
+    val borderValue = if (focused) theme.focusRing else theme.divider
+    val border = if (theme.animations) animateColorAsState(borderValue, label = "searchBarBorder").value else borderValue
 
     Row(
         modifier = modifier
@@ -188,7 +216,7 @@ private fun SearchBar(
         Box(modifier = Modifier.weight(1f)) {
             if (value.isEmpty()) {
                 Text(
-                    text = "搜索视频（按确认键调出键盘）",
+                    text = stringResource(R.string.search_placeholder),
                     style = TextStyle(fontSize = AppType.Body3),
                     color = theme.textTertiary,
                     maxLines = 1,
@@ -222,7 +250,7 @@ private fun SearchBar(
 
         if (value.isNotEmpty()) {
             Text(
-                text = "搜索",
+                text = stringResource(R.string.nav_search),
                 style = TextStyle(fontSize = AppType.Body3, fontWeight = FontWeight.Medium),
                 color = theme.primary,
                 modifier = Modifier
@@ -237,6 +265,7 @@ private fun SearchBar(
 
 /** 热搜词。电视上最重要的一块 —— 不打字就能搜。 */
 @Composable
+@OptIn(ExperimentalLayoutApi::class)
 private fun HotWords(
     words: List<String>,
     onPick: (String) -> Unit,
@@ -245,28 +274,28 @@ private fun HotWords(
     val theme = AppTheme.current
 
     if (words.isEmpty()) {
-        Hint("输入关键词开始搜索")
+        Hint(stringResource(R.string.search_enter))
         return
     }
 
     Column(
-        modifier = Modifier.fillMaxSize().padding(
+        modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(
             start = theme.screenPadding,
             end = theme.screenPadding,
         ),
     ) {
         Text(
-            text = "大家都在搜",
+            text = stringResource(R.string.search_hot),
             style = TextStyle(fontSize = AppType.H4, fontWeight = FontWeight.SemiBold),
             color = theme.textPrimary,
             modifier = Modifier.padding(bottom = 14.dp),
         )
-        // 不用 LazyRow：热搜只有十来个，普通 Row 就够；
-        // 而且它们不该横向滚 —— 一屏全部看到才对，滚动会让人以为就这几个
-        Row(
+        FlowRow(
             horizontalArrangement = Arrangement.spacedBy(theme.cardGap),
+            verticalArrangement = Arrangement.spacedBy(theme.cardGap),
+            maxItemsInEachRow = 6,
         ) {
-            words.take(6).forEachIndexed { index, word ->
+            words.take(12).forEachIndexed { index, word ->
                 HotChip(
                     word = word,
                     onClick = { onPick(word) },
@@ -274,14 +303,6 @@ private fun HotWords(
                         if (index == 0) Modifier.focusRequester(firstFocusRequester) else Modifier
                     ),
                 )
-            }
-        }
-        Row(
-            horizontalArrangement = Arrangement.spacedBy(theme.cardGap),
-            modifier = Modifier.padding(top = theme.cardGap),
-        ) {
-            words.drop(6).take(6).forEach { word ->
-                HotChip(word = word, onClick = { onPick(word) })
             }
         }
     }
@@ -298,7 +319,7 @@ private fun HotChip(word: String, onClick: () -> Unit, modifier: Modifier = Modi
             // 焦点会压到相邻 chip，抬到最上层。
             .observeFocus { focused = it }
             .focusRing(
-                contentDescription = "搜索 $word",
+                contentDescription = stringResource(R.string.search_word_description, word),
                 restFill = theme.surface,
                 elevateOnFocus = true,
                 onClick = onClick,
@@ -310,6 +331,7 @@ private fun HotChip(word: String, onClick: () -> Unit, modifier: Modifier = Modi
             style = TextStyle(fontSize = AppType.Body3),
             color = if (focused) theme.textPrimary else theme.textSecondary,
             maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
         )
     }
 }
@@ -337,6 +359,10 @@ class SearchViewModel(app: Application) : AndroidViewModel(app) {
         private set
     var loading by mutableStateOf(false)
         private set
+    var loadingMore by mutableStateOf(false); private set
+    var hasMore by mutableStateOf(false); private set
+    private var page = 0
+    private var failedPage = 1
     var error by mutableStateOf<String?>(null)
         private set
 
@@ -347,17 +373,52 @@ class SearchViewModel(app: Application) : AndroidViewModel(app) {
     var lastKeyword by mutableStateOf("")
         private set
 
-    private var inFlight = false
+    private var searchJob: Job? = null
+    private var hotJob: Job? = null
+    private var searchGeneration = 0
+    private var hotGeneration = 0
+    private var resultsLoaded = false
+    var hotError by mutableStateOf<String?>(null); private set
 
-    fun loadHot() {
-        if (hotWords.isNotEmpty()) return
-        viewModelScope.launch {
-            hotWords = graph.api.hotSearch()
-            AppLog.i("Search", "热搜 ${hotWords.size} 条")
+    fun enter() {
+        loadHot()
+        if (searched && !resultsLoaded && !loading && error == null) submit(lastKeyword)
+    }
+
+    fun stopLoading() {
+        ++searchGeneration; ++hotGeneration
+        searchJob?.cancel(); hotJob?.cancel()
+        searchJob = null; hotJob = null; loading = false; loadingMore = false
+    }
+
+    fun loadHot(force: Boolean = false) {
+        if (hotJob?.isActive == true || (!force && hotWords.isNotEmpty())) return
+        val generation = ++hotGeneration
+        hotError = null
+        hotJob = viewModelScope.launch {
+            try {
+                val fresh = graph.api.hotSearch(strict = true)
+                coroutineContext.ensureActive()
+                if (generation != hotGeneration) return@launch
+                hotWords = fresh.distinct()
+                AppLog.i("Search", "热搜 ${hotWords.size} 条")
+            } catch (e: CancellationException) { throw e }
+            catch (_: Exception) { if (generation == hotGeneration) hotError = graph.getString(R.string.search_hot_failed) }
         }
     }
 
+    fun reload() {
+        if (searched && lastKeyword.isNotBlank()) submit(lastKeyword) else loadHot(force = true)
+    }
+
     fun search() = submit(keyword)
+
+    fun retry() { if (failedPage == 1) submit(lastKeyword) else loadMore() }
+
+    fun loadMore() {
+        if (!hasMore || searchJob?.isActive == true || lastKeyword.isBlank()) return
+        request(lastKeyword, page + 1)
+    }
 
     /** 点热搜词直接搜，并把搜索框里的字也换掉 —— 不然用户会以为搜的是框里那个词 */
     fun searchWith(word: String) {
@@ -368,27 +429,37 @@ class SearchViewModel(app: Application) : AndroidViewModel(app) {
     private fun submit(raw: String) {
         val q = raw.trim()
         if (q.isEmpty()) {
+            ++searchGeneration; searchJob?.cancel(); searchJob = null; loading = false; loadingMore = false
             // 空关键词不请求：既省一次调用，也避免把"搜索框是空的"渲染成一次失败
-            error = "先输入要搜的内容，或者直接点下面的热搜词"
+            error = graph.getString(R.string.search_missing_keyword)
             return
         }
-        if (inFlight) return
-        inFlight = true
-        loading = true
-        error = null
+        if (searchJob?.isActive == true && q == lastKeyword) return
+        searchJob?.cancel()
         searched = true
+        if (q != lastKeyword) { results = emptyList(); resultsLoaded = false; page = 0; hasMore = false }
         lastKeyword = q
-        viewModelScope.launch {
-            results = graph.api.searchVideo(q)
-            // ⚠️ 这里**故意不去猜**"空结果是没搜到还是接口挂了"：
-            //    searchVideo 为了界面不崩，失败时也返回空列表，两者在这里无法区分。
-            //    所以界面统一显示"没有找到"，而把"到底是什么原因"留在日志里
-            //    （BiliApi.searchVideo 会把服务端原话打进 AppLog）。
-            //    与其随便挑一个原因猜给用户看，不如给一句不会误导的话。
-            error = null
-            loading = false
-            inFlight = false
-            AppLog.i("Search", "「$q」→ ${results.size} 条")
+        request(q, 1)
+    }
+
+    private fun request(q: String, nextPage: Int) {
+        val generation = ++searchGeneration
+        loading = nextPage == 1; loadingMore = nextPage > 1; error = null
+        searchJob = viewModelScope.launch {
+            try {
+                val fresh = graph.api.searchVideoPage(q, nextPage)
+                coroutineContext.ensureActive()
+                if (generation != searchGeneration || q != lastKeyword) return@launch
+                results = (if (nextPage == 1) fresh.items else results + fresh.items).distinctBy { it.bvid }
+                resultsLoaded = true
+                page = nextPage; hasMore = fresh.hasMore
+                AppLog.i("Search", "搜索第$page 页，累计 ${results.size} 条，更多=$hasMore")
+            } catch (e: CancellationException) { throw e }
+            catch (e: Exception) { if (generation == searchGeneration) {
+                failedPage = nextPage
+                error = graph.getString(R.string.search_failed); AppLog.w("Search", e.javaClass.simpleName)
+            } }
+            finally { if (generation == searchGeneration) { loading = false; loadingMore = false } }
         }
     }
 }

@@ -84,12 +84,16 @@ fun SectionTabBar(
     val theme = AppTheme.current
     val navigation = LocalNavigationFocus.current
     val startupRequester = remember { FocusRequester() }
+    DisposableEffect(navigation, contentFocusRequester) {
+        navigation?.contentTarget = contentFocusRequester
+        onDispose { if (navigation?.contentTarget === contentFocusRequester) navigation?.contentTarget = null }
+    }
     DisposableEffect(navigation) { onDispose { navigation?.tabsFocused = false } }
     val shape = RoundedCornerShape(CHIP_HEIGHT / 2)
 
     LazyRow(
         modifier = modifier.onFocusChanged { navigation?.tabsFocused = it.hasFocus }
-            .height(theme.tabBarHeight),
+            .height(theme.tabBarHeight * androidx.compose.ui.platform.LocalDensity.current.fontScale.coerceAtLeast(1f)),
         horizontalArrangement = Arrangement.spacedBy(CHIP_GAP),
         verticalAlignment = Alignment.CenterVertically,
     ) {

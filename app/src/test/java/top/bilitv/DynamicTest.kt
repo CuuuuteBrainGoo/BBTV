@@ -39,6 +39,24 @@ import top.bilitv.ui.components.dynamicStatLine
  *    和"网络不通"要给两句不同的话。
  */
 class DynamicTest {
+    @Test fun 错误结构和坏游标不能假装最终空页() {
+        listOf("""{"code":0,"data":null}""", """{"code":0,"data":{}}""",
+            """{"code":0,"data":{"items":{}}}""",
+            """{"code":0,"data":{"items":[],"has_more":true}}""",
+            """{"code":0,"data":{"items":[],"offset":"x","has_more":"bad"}}""").forEach {
+            assertEquals(CODE_UNPARSEABLE, parseDynamicFeed(it).code)
+        }
+        for (flag in listOf("1", "true", "\"1\"", "\"true\"")) {
+            val page = parseDynamicFeed("""{"code":0,"data":{"items":[],"offset":"older","has_more":$flag}}""")
+            assertEquals(0, page.code)
+            assertTrue(page.items.isEmpty())
+            assertTrue(page.hasMore)
+            assertEquals("older", page.nextOffset)
+        }
+        for (flag in listOf("0", "false", "\"0\"", "\"false\"")) {
+            assertFalse(parseDynamicFeed("""{"code":0,"data":{"items":[],"has_more":$flag}}""").hasMore)
+        }
+    }
     @Test fun overlappingPagesAreUniqueAndNewestFirst() {
         fun page(vararg entries: String) = parseDynamicFeed(
             """{"code":0,"data":{"items":[${entries.joinToString(",")}]}}""").items

@@ -1,5 +1,6 @@
 package top.bilitv.ui.home
 
+import top.bilitv.ui.components.verticalScrollbar
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -7,7 +8,6 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items as gridItems
@@ -16,6 +16,7 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
@@ -25,6 +26,8 @@ import androidx.compose.runtime.saveable.mapSaver
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.stringResource
+import top.bilitv.R
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.text.TextStyle
@@ -37,6 +40,9 @@ import top.bilitv.ui.components.RequestFocusOnAppear
 import top.bilitv.ui.components.SectionTabBar
 import top.bilitv.ui.components.TvCard
 import top.bilitv.ui.components.feedMetaLine
+import top.bilitv.ui.theme.gridCells
+import top.bilitv.ui.components.LoadFeedback
+import top.bilitv.ui.theme.nearEnd
 import top.bilitv.ui.theme.AppTheme
 import top.bilitv.ui.theme.AppType
 import top.bilitv.ui.RefreshBus
@@ -94,6 +100,7 @@ fun HomeScreen(
     onOpenSeason: (Long) -> Unit,
 ) {
     val vm: HomeViewModel = viewModel()
+    DisposableEffect(vm) { onDispose { vm.stopLoading() } }
     val theme = AppTheme.current
 
     val sections = vm.sections
@@ -107,31 +114,6 @@ fun HomeScreen(
      * VM 活得比页面久（切 Tab 不会重建它），所以不能只在构造时读一次配置。
      * `LaunchedEffect(Unit)` 会在"切走再切回来"时重新跑 —— 因为那一页会离开组合。
      */
-    var entered by rememberSaveable { mutableStateOf(false) }
-    LaunchedEffect(Unit) {
-        vm.syncSections()
-        if (!entered) {
-            entered = true
-            vm.refresh()
-        }
-    }
-
-    /*
-     * 遥控器菜单键刷新。
-     *
-     * 外壳（`AppShell`）只负责"喊一声"（`RefreshBus.request()`），
-     * 谁在被显示谁自己听着 —— 外壳不该知道每个页面怎么刷新。
-     * `tick == 0` 是初始值，不刷；切成别的 Tab 时这一页会离开组合，正好不会再响应。
-     */
-    var lastRefreshRequest by remember { mutableIntStateOf(RefreshBus.tick) }
-    LaunchedEffect(RefreshBus.tick) {
-        if (RefreshBus.tick != lastRefreshRequest) {
-            lastRefreshRequest = RefreshBus.tick
-            vm.refresh()
-        }
-    }
-
-
     val gridState = rememberLazyGridState()
     val firstCard = remember { FocusRequester() }
     val retryButton = remember { FocusRequester() }
@@ -149,6 +131,36 @@ fun HomeScreen(
             values.forEach { (key, value) -> if (value is String) put(key, value) }
         } },
     )) { mutableStateMapOf<String, String>() }
+    fun viewport(): HomeViewport {
+        val focused = lastFocused[tab.id]?.takeIf { key -> gridState.layoutInfo.visibleItemsInfo.any { it.key == key } }
+        return HomeViewport(gridState.firstVisibleItemIndex, gridState.firstVisibleItemScrollOffset,
+            focused ?: vm.items.getOrNull(gridState.firstVisibleItemIndex)?.cardKey())
+    }
+    var entered by rememberSaveable { mutableStateOf(false) }
+    LaunchedEffect(Unit) {
+        val sourceChanged = vm.syncSections()
+        if (!entered) {
+            entered = true
+            vm.refresh(viewport())
+        } else if (vm.autoRefresh || sourceChanged || vm.needsFirstPage) vm.refresh(viewport())
+    }
+
+    /*
+     * 遥控器菜单键刷新。
+     *
+     * 外壳（`AppShell`）只负责"喊一声"（`RefreshBus.request()`），
+     * 谁在被显示谁自己听着 —— 外壳不该知道每个页面怎么刷新。
+     * `tick == 0` 是初始值，不刷；切成别的 Tab 时这一页会离开组合，正好不会再响应。
+     */
+    var lastRefreshRequest by remember { mutableIntStateOf(RefreshBus.tick) }
+    LaunchedEffect(RefreshBus.tick) {
+        if (RefreshBus.tick != lastRefreshRequest) {
+            lastRefreshRequest = RefreshBus.tick
+            vm.refresh(viewport())
+        }
+    }
+
+
     val list = vm.items
 
     /*
@@ -160,9 +172,9 @@ fun HomeScreen(
      *   而且放在 flow 的 lambda 里读，所以每次滚动都会被重新求值。
      */
     LaunchedEffect(gridState, list.size) {
-        snapshotFlow { gridState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: -1 }
-            .collect { last ->
-                if (last >= list.size - LOAD_MORE_AHEAD) vm.loadMore()
+        snapshotFlow { gridState.layoutInfo.nearEnd(list.size) }
+            .collect { near ->
+                if (near) vm.loadMore()
             }
     }
 
@@ -185,7 +197,7 @@ fun HomeScreen(
     Column(modifier = Modifier.fillMaxSize()) {
         SectionTabBar(
             // ★ 选项卡来自**用户配置的分区名单**（顺序即显示顺序）。见 HomeSection 的说明。
-            labels = sections.map { it.label },
+            labels = sections.map { stringResource(it.labelRes) },
             selectedIndex = tabIndex,
             contentFocusRequester = if (list.isNotEmpty()) firstCard else retryButton.takeIf { !vm.loading },
             /*
@@ -198,7 +210,7 @@ fun HomeScreen(
              * 点当前项到底该不该重新请求。
              */
             onSelect = { i ->
-                if (i == tabIndex) vm.refresh() else vm.show(sections[i])
+                if (i == tabIndex) vm.refresh(viewport()) else vm.show(sections[i])
             },
             modifier = Modifier.padding(
                 start = theme.screenPadding,
@@ -216,23 +228,26 @@ fun HomeScreen(
          * `isRefreshing` 只在"已经有内容"时才驱动那个转圈 ——
          * 首屏本来是空的，那时全屏转圈由下面的 `vm.loading` 分支负责，两个转圈会打架。
          */
+        if (tab == HomeSection.RECOMMEND && vm.recommendNotice != null) Text(vm.recommendNotice!!,
+            color = theme.textSecondary, fontSize = 12.sp, modifier = Modifier.padding(horizontal = theme.screenPadding, vertical = 4.dp))
         PullToRefreshBox(
             isRefreshing = vm.loading && list.isNotEmpty(),
-            onRefresh = { vm.refresh() },
+            onRefresh = { vm.refresh(viewport()) },
             modifier = Modifier.fillMaxSize(),
         ) {
         Box(modifier = Modifier.fillMaxSize()) {
             when {
-                vm.loading && list.isEmpty() -> CircularProgressIndicator(Modifier.align(Alignment.Center))
+                (vm.loading || vm.loadingMore) && list.isEmpty() -> CircularProgressIndicator(Modifier.align(Alignment.Center))
 
                 list.isEmpty() -> EmptyState(
-                    message = vm.error ?: "暂时没有内容",
-                    onRetry = { vm.refresh() },
+                    message = vm.error ?: stringResource(if (vm.hasMore) R.string.home_empty_page else R.string.empty_content),
+                    onRetry = { if (vm.hasMore && vm.error == null) vm.loadMore() else vm.retry() },
                     retryRequester = retryButton,
+                    action = stringResource(if (vm.hasMore && vm.error == null) R.string.action_continue_loading else R.string.action_reload),
                 )
 
                 else -> LazyVerticalGrid(
-                    columns = GridCells.Fixed(theme.cardColumns),
+                    columns = theme.gridCells(),
                     state = gridState,
                     contentPadding = PaddingValues(
                         start = theme.screenPadding,
@@ -241,7 +256,7 @@ fun HomeScreen(
                     ),
                     horizontalArrangement = Arrangement.spacedBy(theme.cardGap),
                     verticalArrangement = Arrangement.spacedBy(theme.rowGap),
-                    modifier = Modifier.fillMaxSize(),
+                    modifier = Modifier.fillMaxSize().verticalScrollbar(gridState),
                 ) {
                     /*
                      * ⛔ key 必须用 cardKey()，**不能用 bvid**：
@@ -265,7 +280,21 @@ fun HomeScreen(
                             focusRequester = firstCard.takeIf { item.cardKey() == defaultKey },
                         )
                     }
+                    if (vm.loadingMore || vm.error != null) item(span = { GridItemSpan(maxLineSpan) }) {
+                        LoadFeedback(vm.loadingMore, vm.error, vm::retry)
+                    }
+                    else if (vm.hasMore) item(span = { GridItemSpan(maxLineSpan) }, key = "more") {
+                        TvCard(onClick = vm::loadMore, focusedScale = 1f, contentDescription = stringResource(R.string.action_load_more),
+                            modifier = Modifier.fillMaxWidth()) {
+                            Text(stringResource(R.string.action_load_more), color = theme.primary, modifier = Modifier.padding(12.dp))
+                        }
+                    }
                 }
+            }
+            if (vm.canBacktrack) TvCard(onClick = { vm.backtrack() }, focusedScale = 1f,
+                contentDescription = stringResource(R.string.action_previous_recommendations),
+                modifier = Modifier.align(Alignment.BottomEnd).padding(theme.screenPadding)) {
+                Text(stringResource(R.string.action_previous_batch), color = theme.primary, modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp))
             }
         }
         }
@@ -313,6 +342,20 @@ fun HomeScreen(
  * 现在只在**刷新**（`refreshCount` / `focusKick` 变化）时抢，那是他明确要过的：
  * "刷新后焦点回到第一行第一列"。
  */
+    var handledRestore by rememberSaveable { mutableIntStateOf(vm.restoreCount) }
+    LaunchedEffect(vm.restoreCount) {
+        if (handledRestore == vm.restoreCount) return@LaunchedEffect
+        handledRestore = vm.restoreCount
+        vm.restoredViewport?.let { saved ->
+            val index = saved.index.coerceIn(0, (cards.size - 1).coerceAtLeast(0))
+            val key = saved.focusedKey?.takeIf { wanted -> cards.any { it.cardKey() == wanted } }
+                ?: cards.getOrNull(index)?.cardKey()
+            if (key != null) lastFocused[tab.id] = key
+            gridState.scrollToItem(index, saved.offset.coerceAtLeast(0))
+            androidx.compose.runtime.withFrameNanos { }
+            runCatching { firstCard.requestFocus() }
+        }
+    }
     RequestFocusOnAppear(firstCard, "${vm.refreshCount}-$focusKick")
     if (!vm.loading && list.isEmpty()) RequestFocusOnAppear(retryButton, vm.error)
 }
@@ -326,21 +369,13 @@ fun HomeScreen(
 private fun FeedItem.cardKey(): String =
     if (bvid.isNotBlank()) "b:$bvid" else "s:$seasonId"
 
-/**
- * 距离列表末尾还剩几项时就开始预取下一批。
- *
- * 不等到"真的滚到最后一项"才请求 —— 那样用户会看到一段空白等待。
- * 8 ≈ 两行卡片（4 列），够在网络往返期间把画面填住。
- */
-private const val LOAD_MORE_AHEAD = 8
-
 /** 下拉刷新后、补一次焦点复位前要等多久（让触摸手势真正结束）。 */
 private const val TOUCH_SETTLE_MS = 600L
 
 /**
  * 空态：一句话 + 一个「重新加载」。
  *
- * 措辞用具体的那一句（每个标签自己的 [HomeTab.emptyHint]），不是"没有内容"——
+ * 空态点明当前分区；成功的空列表不推断为网络或接口故障。
  * "谁空了"决定了用户该不该重试、还是该换个标签。
  */
 @Composable
@@ -348,6 +383,7 @@ private fun EmptyState(
     message: String,
     onRetry: () -> Unit,
     retryRequester: FocusRequester,
+    action: String,
 ) {
     val theme = AppTheme.current
     Column(
@@ -368,10 +404,10 @@ private fun EmptyState(
                 .focusRequester(retryRequester)
                 .padding(top = 24.dp),
             background = theme.surfaceHigh,
-            contentDescription = "重试",
+            contentDescription = action,
         ) {
             Text(
-                text = "重新加载",
+                text = action,
                 style = TextStyle(fontSize = AppType.Body2),
                 color = theme.textPrimary,
                 modifier = Modifier.padding(horizontal = 28.dp, vertical = 14.dp),

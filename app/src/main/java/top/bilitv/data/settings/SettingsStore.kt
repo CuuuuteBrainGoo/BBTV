@@ -3,9 +3,10 @@ package top.bilitv.data.settings
 import android.content.Context
 import android.content.SharedPreferences
 import top.bilitv.data.sponsor.SponsorCategory
+import top.bilitv.R
 
-enum class StartupFocus(val label: String) {
-    RAIL("侧边栏"), TABS("分区标签"), CONTENT("内容卡片");
+enum class StartupFocus(val labelRes: Int) {
+    RAIL(R.string.focus_rail), TABS(R.string.focus_tabs), CONTENT(R.string.focus_content);
     companion object {
         fun fromName(name: String?): StartupFocus = entries.firstOrNull { it.name == name } ?: RAIL
     }
@@ -32,6 +33,95 @@ class SettingsStore(context: Context) {
 
     private val prefs: SharedPreferences =
         context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+
+    var backgroundStyle: BackgroundStyle
+        get() = BackgroundStyle.of(prefs.getString("ui_background_style", null))
+        set(v) = prefs.edit().putString("ui_background_style", v.name).apply()
+    var interfaceAnimations: Boolean
+        get() = prefs.getBoolean("ui_animations", true)
+        set(v) = prefs.edit().putBoolean("ui_animations", v).apply()
+    var showScrollbars: Boolean
+        get() = prefs.getBoolean("ui_scrollbars", true)
+        set(v) = prefs.edit().putBoolean("ui_scrollbars", v).apply()
+    var touchSeek: Boolean
+        get() = prefs.getBoolean("touch_seek", true)
+        set(v) = prefs.edit().putBoolean("touch_seek", v).apply()
+    var touchBrightness: Boolean
+        get() = prefs.getBoolean("touch_brightness", true)
+        set(v) = prefs.edit().putBoolean("touch_brightness", v).apply()
+    var touchVolume: Boolean
+        get() = prefs.getBoolean("touch_volume", true)
+        set(v) = prefs.edit().putBoolean("touch_volume", v).apply()
+    var touchBoost: Boolean
+        get() = prefs.getBoolean("touch_boost", true)
+        set(v) = prefs.edit().putBoolean("touch_boost", v).apply()
+    var touchDoubleTap: Boolean
+        get() = prefs.getBoolean("touch_double_tap", true)
+        set(v) = prefs.edit().putBoolean("touch_double_tap", v).apply()
+    fun resetPlaybackPage() {
+        val editor = prefs.edit()
+        PlaybackTuning.resetKeys(prefs.all.keys).forEach { editor.remove(it) }
+        editor.apply()
+    }
+
+    val configuredPlayerKeys: List<Int> get() = prefs.all.keys.mapNotNull {
+        Regex("player_key_(\\d+)_(?:short|long)").matchEntire(it)?.groupValues?.get(1)?.toIntOrNull()
+    }.filter { PlayerKeyBindings.editable(it, true) }.distinct().sorted()
+    fun playerKeyAction(code: Int, long: Boolean): RemoteAction? = RemoteAction.of(
+        prefs.getString("player_key_${PlayerKeyBindings.canonical(code)}_${if (long) "long" else "short"}", null))
+    fun setPlayerKeyAction(code: Int, long: Boolean, action: RemoteAction?) {
+        require(PlayerKeyBindings.editable(code, long))
+        require(long || action != RemoteAction.BOOST)
+        val key = "player_key_${PlayerKeyBindings.canonical(code)}_${if (long) "long" else "short"}"
+        prefs.edit().apply { if (action == null) remove(key) else putString(key, action.name) }.apply()
+    }
+
+    var interfaceFontScale: Float
+        get() = InterfaceTuning.font(prefs.getFloat("ui_font_scale", 1f))
+        set(v) = prefs.edit().putFloat("ui_font_scale", InterfaceTuning.font(v)).apply()
+    var cardMenuOnMenuKey: Boolean
+        get() = prefs.getBoolean("ui_card_menu", true)
+        set(v) = prefs.edit().putBoolean("ui_card_menu", v).apply()
+    var rightToCards: Boolean
+        get() = prefs.getBoolean("ui_right_cards", false)
+        set(v) = prefs.edit().putBoolean("ui_right_cards", v).apply()
+    var autoRefresh: Boolean
+        get() = prefs.getBoolean("ui_auto_refresh", false)
+        set(v) = prefs.edit().putBoolean("ui_auto_refresh", v).apply()
+    var playerSidebarWidth: Float
+        get() = InterfaceTuning.sidebar(prefs.getFloat("ui_player_sidebar_width", 0f))
+        set(v) = prefs.edit().putFloat("ui_player_sidebar_width", InterfaceTuning.sidebar(v)).apply()
+    var playerButtonScale: Float
+        get() = InterfaceTuning.buttons(prefs.getFloat("ui_player_button_scale", 1f))
+        set(v) = prefs.edit().putFloat("ui_player_button_scale", InterfaceTuning.buttons(v)).apply()
+    var showPlayerProgress: Boolean
+        get() = prefs.getBoolean("player_show_progress", true)
+        set(v) = prefs.edit().putBoolean("player_show_progress", v).apply()
+    var showPauseIcon: Boolean
+        get() = prefs.getBoolean("player_pause_icon", true)
+        set(v) = prefs.edit().putBoolean("player_pause_icon", v).apply()
+    var hideControlsOnStart: Boolean
+        get() = prefs.getBoolean("player_hide_controls_start", false)
+        set(v) = prefs.edit().putBoolean("player_hide_controls_start", v).apply()
+    var showProgressTime: Boolean
+        get() = prefs.getBoolean("player_progress_time", false)
+        set(v) = prefs.edit().putBoolean("player_progress_time", v).apply()
+
+    fun resetAppearancePage() {
+        val editor = prefs.edit()
+        InterfaceTuning.appearanceKeys(prefs.all.keys).forEach { editor.remove(it) }
+        editor.apply()
+    }
+
+    var cardColumns: Int
+        get() = CardSize.columns(prefs.getInt("ui_card_columns", 0))
+        set(v) = prefs.edit().putInt("ui_card_columns", CardSize.columns(v)).apply()
+    var collectionColumns: Int
+        get() = CardSize.columns(prefs.getInt("ui_collection_columns", 0))
+        set(v) = prefs.edit().putInt("ui_collection_columns", CardSize.columns(v)).apply()
+    var cardSize: CardSize
+        get() = CardSize.of(prefs.getString("ui_card_size", null))
+        set(v) = prefs.edit().putString("ui_card_size", v.name).apply()
 
     var autoLowerQuality: Boolean
         get() = prefs.getBoolean("auto_lower_quality", true)
@@ -154,14 +244,10 @@ class SettingsStore(context: Context) {
         get() = prefs.getString("subtitle_language", "").orEmpty()
         set(v) = prefs.edit().putString("subtitle_language", v.take(64)).apply()
     var subtitleStyle: SubtitleStyle
-        get() = SubtitleStyle(
-            prefs.getInt("subtitle_font", 2).coerceIn(0, 4), prefs.getInt("subtitle_color", 0).coerceIn(0, 7),
-            prefs.getInt("subtitle_position", 0).coerceIn(0, 6), prefs.getInt("subtitle_background", 60).coerceIn(0, 100),
-            prefs.getBoolean("subtitle_fade", false), prefs.getInt("subtitle_x", 50).coerceIn(5, 95),
-            prefs.getInt("subtitle_y", 90).coerceIn(5, 95))
-        set(v) = prefs.edit().putInt("subtitle_font", v.font.coerceIn(0, 4)).putInt("subtitle_color", v.color.coerceIn(0, 7))
-            .putInt("subtitle_position", v.position.coerceIn(0, 6)).putInt("subtitle_background", v.background.coerceIn(0, 100))
-            .putBoolean("subtitle_fade", v.fade).putInt("subtitle_x", v.x.coerceIn(5, 95)).putInt("subtitle_y", v.y.coerceIn(5, 95)).apply()
+        get() = SubtitleStyle(prefs.getInt("subtitle_font", 2).coerceIn(0, 4),
+            prefs.getInt("subtitle_background", 60).coerceIn(0, 100))
+        set(v) = prefs.edit().putInt("subtitle_font", v.font.coerceIn(0, 4))
+            .putInt("subtitle_background", v.background.coerceIn(0, 100)).apply()
 
     /** 只重置弹幕／字幕，不清登录、播放默认值、首页或观看记录。 */
     fun resetDanmakuPage() {
@@ -171,6 +257,10 @@ class SettingsStore(context: Context) {
     }
 
     // ---------------------------------------------------------------- 广告
+
+    var skipOfficialIntroOutro: Boolean
+        get() = prefs.getBoolean("skip_official_intro_outro", true)
+        set(v) = prefs.edit().putBoolean("skip_official_intro_outro", v).apply()
 
     /** 总开关，默认**开**（少爷 2026-09-29 定；改动的理由见类注释） */
     var sponsorEnabled: Boolean
@@ -237,19 +327,18 @@ class SettingsStore(context: Context) {
         get() {
             val ids = prefs.getString(KEY_PLAYER_BUTTONS, null)?.split(',')?.filter { it.isNotBlank() }.orEmpty()
             val schema = prefs.getInt("player_buttons_schema", 0)
-            if (schema < 3) {
-                val migrated = if (schema < 1) top.bilitv.ui.player.PlayerBarButton.migrateLegacy(ids)
-                    else if (schema < 2) (ids + listOf("up", "line")).distinct() else ids
-                val updated = if (migrated.isEmpty()) top.bilitv.ui.player.PlayerBarButton.DEFAULT.map { it.id }
-                    else (migrated + "subtitle").distinct()
+            if (schema < 8) {
+                val updated = top.bilitv.ui.player.PlayerBarButton.upgrade(ids, schema)
                 prefs.edit().putString(KEY_PLAYER_BUTTONS, updated.joinToString(","))
-                    .putInt("player_buttons_schema", 3).apply()
+                    .putInt("player_buttons_schema", 8)
+                    .remove("screenshot_subtitle").remove("screenshot_danmaku")
+                    .remove("screenshot_debug").remove("screenshot_format").apply()
                 return updated
             }
             return ids
         }
         set(v) = prefs.edit().putString(KEY_PLAYER_BUTTONS, v.joinToString(","))
-            .putInt("player_buttons_schema", 3).apply()
+            .putInt("player_buttons_schema", 8).apply()
 
     var filterUiAds: Boolean
         get() = prefs.getBoolean(KEY_AD_FILTER, true)
@@ -271,6 +360,14 @@ class SettingsStore(context: Context) {
     var preferredQuality: Int
         get() = prefs.getInt(KEY_QUALITY, QualityOptions.AUTO_ID)
         set(v) = prefs.edit().putInt(KEY_QUALITY, v).apply()
+
+    var preferredAudioQuality: AudioQuality
+        get() = AudioQuality.of(prefs.getInt("preferred_audio_quality", 0))
+        set(v) = prefs.edit().putInt("preferred_audio_quality", v.id).apply()
+
+    var playbackPerformance: PlaybackPerformance
+        get() = PlaybackPerformance.of(prefs.getString("playback_performance", null))
+        set(v) = prefs.edit().putString("playback_performance", v.name).apply()
 
     /**
      * 「只用 AVC（兼容模式）」—— 高级模式的**逃生开关**。
@@ -372,9 +469,44 @@ class SettingsStore(context: Context) {
      *
      * 消费者：`PlayerScreen` 的 `STATE_ENDED` 回调。
      */
+    var playbackEndAction: PlaybackTuning.EndAction
+        get() = PlaybackTuning.EndAction.of(prefs.getString("playback_end_action", null), prefs.getBoolean(KEY_AUTO_NEXT, true))
+        set(v) = prefs.edit().putString("playback_end_action", v.name).putBoolean(KEY_AUTO_NEXT, v == PlaybackTuning.EndAction.NEXT).apply()
     var autoNext: Boolean
-        get() = prefs.getBoolean(KEY_AUTO_NEXT, true)
-        set(v) = prefs.edit().putBoolean(KEY_AUTO_NEXT, v).apply()
+        get() = playbackEndAction == PlaybackTuning.EndAction.NEXT
+        set(v) { playbackEndAction = if (v) PlaybackTuning.EndAction.NEXT else PlaybackTuning.EndAction.PAUSE }
+    var recommendSource: RecommendSource
+        get() = RecommendSource.of(prefs.getString("recommend_source", null))
+        set(v) = prefs.edit().putString("recommend_source", v.name).apply()
+    var videoApiSource: VideoApiSource
+        get() = VideoApiSource.of(prefs.getString("video_api_source", null))
+        set(v) = prefs.edit().putString("video_api_source", v.name).apply()
+    var personalizedRecommendations: Boolean
+        get() = prefs.getBoolean("recommend_personalized", true)
+        set(v) = prefs.edit().putBoolean("recommend_personalized", v).apply()
+    var showRecommendBacktrack: Boolean
+        get() = prefs.getBoolean("ui_recommend_backtrack", true)
+        set(v) = prefs.edit().putBoolean("ui_recommend_backtrack", v).apply()
+    var detailSections: List<String>
+        get() = DetailLayout.sections(prefs.getString("ui_detail_sections", null)?.split(",") ?: DetailLayout.ALL)
+        set(v) = prefs.edit().putString("ui_detail_sections", DetailLayout.sections(v).joinToString(",")).apply()
+    var detailShowMeta: Boolean
+        get() = prefs.getBoolean("ui_detail_meta", true)
+        set(v) = prefs.edit().putBoolean("ui_detail_meta", v).apply()
+    var returnDetailsOnExit: Boolean
+        get() = prefs.getBoolean("return_details_on_exit", false)
+        set(v) = prefs.edit().putBoolean("return_details_on_exit", v).apply()
+    var askResume: Boolean
+        get() = prefs.getBoolean("ask_resume", false)
+        set(v) = prefs.edit().putBoolean("ask_resume", v).apply()
+    var rememberUpSpeed: Boolean
+        get() = prefs.getBoolean("remember_up_speed", false)
+        set(v) = prefs.edit().putBoolean("remember_up_speed", v).apply()
+    fun speedForUp(mid: Long): Int = if (rememberUpSpeed && mid > 0)
+        PlaybackTuning.speedIndexOf(prefs.getInt("up_speed_$mid", playbackSpeedIndex)) else playbackSpeedIndex
+    fun rememberSpeedForUp(mid: Long, index: Int) {
+        if (rememberUpSpeed && mid > 0) prefs.edit().putInt("up_speed_$mid", PlaybackTuning.speedIndexOf(index)).apply()
+    }
 
     /**
      * ★ 2026-09-30 新增（少爷反馈 6）：「**单击返回键退出**」。
@@ -436,10 +568,6 @@ class SettingsStore(context: Context) {
     var startupFocus: StartupFocus
         get() = StartupFocus.fromName(prefs.getString("ui_startup_focus", null))
         set(v) = prefs.edit().putString("ui_startup_focus", v.name).apply()
-    var showClock: Boolean
-        get() = prefs.getBoolean("ui_show_clock", true)
-        set(v) = prefs.edit().putBoolean("ui_show_clock", v).apply()
-
     /** 原生偏好监听；离开页面时必须取消，不增加另一套设置存储。 */
     fun observeChanges(onChanged: () -> Unit): () -> Unit {
         val listener = SharedPreferences.OnSharedPreferenceChangeListener { _, _ -> onChanged() }
@@ -458,6 +586,10 @@ class SettingsStore(context: Context) {
         set(v) = prefs.edit().putString(KEY_SKIN, v.id).apply()
 
     /** 设置页的「高级模式」是否已开启（对应少爷要的"BIOS advanced mode"） */
+    var showPlaybackStats: Boolean
+        get() = prefs.getBoolean("diagnostic_playback_stats", false)
+        set(v) = prefs.edit().putBoolean("diagnostic_playback_stats", v).apply()
+
     var advancedMode: Boolean
         get() = prefs.getBoolean(KEY_ADVANCED, false)
         set(v) = prefs.edit().putBoolean(KEY_ADVANCED, v).apply()

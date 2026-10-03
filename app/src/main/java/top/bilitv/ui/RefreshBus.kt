@@ -3,6 +3,10 @@ package top.bilitv.ui
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 
 /**
  * 「刷新当前页」的总线。
@@ -34,5 +38,15 @@ object RefreshBus {
     /** 请求当前页刷新。 */
     fun request() {
         tick++
+    }
+}
+
+/** Entering a page does not replay an earlier page's request. Only visible consumers run. */
+@Composable
+internal fun OnRefreshRequest(onRefresh: () -> Unit) {
+    var handled by remember { mutableIntStateOf(RefreshBus.tick) }
+    val latest by rememberUpdatedState(onRefresh)
+    LaunchedEffect(RefreshBus.tick) {
+        if (handled != RefreshBus.tick) { handled = RefreshBus.tick; latest() }
     }
 }

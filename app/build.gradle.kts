@@ -12,8 +12,8 @@ android {
         applicationId = "top.bilitv"
         minSdk = 21
         targetSdk = 35
-        versionCode = 10305
-        versionName = "1.3.5"
+        versionCode = 10444
+        versionName = "1.4.44"
 
         // 目标机型是 ARM64 电视盒子；只打这一个 ABI，减体积减内存（docs/05 §4 第 8 条）
         ndk {

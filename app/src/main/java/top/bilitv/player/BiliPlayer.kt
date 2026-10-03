@@ -15,6 +15,7 @@ import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.analytics.AnalyticsListener
 import androidx.media3.exoplayer.source.MediaSource
 import androidx.media3.exoplayer.source.MergingMediaSource
+import androidx.media3.exoplayer.source.ClippingMediaSource
 import androidx.media3.exoplayer.source.ProgressiveMediaSource
 import androidx.media3.exoplayer.hls.HlsMediaSource
 import androidx.media3.extractor.DefaultExtractorsFactory
@@ -99,6 +100,7 @@ class BiliPlayer(context: Context) {
      * 已用 javap 逐个核过）—— 别照着记错的结论去写。
      */
     private val settings = SettingsStore(appContext)
+    val performanceMode = settings.playbackPerformance
 
     private val renderersFactory = DefaultRenderersFactory(appContext)
         .setMediaCodecSelector(DecoderSelector.live { settings.decoderName })
@@ -106,8 +108,8 @@ class BiliPlayer(context: Context) {
     val exo: ExoPlayer = ExoPlayer.Builder(appContext, renderersFactory)
         .setLoadControl(
             DefaultLoadControl.Builder()
-                .setBufferDurationsMs(20_000, 40_000, 1_500, 3_000)
-                .setTargetBufferBytes(48 * 1024 * 1024)
+                .setBufferDurationsMs(performanceMode.minBufferMs, performanceMode.maxBufferMs, 1_500, 3_000)
+                .setTargetBufferBytes(performanceMode.bufferMiB * 1024 * 1024)
                 .setPrioritizeTimeOverSizeThresholds(false)
                 .build()
         )
@@ -116,6 +118,7 @@ class BiliPlayer(context: Context) {
     // ---- 状态
 
     private var selection: StreamSelector.Selection? = null
+    private var previewEndMs: Long? = null
     fun currentSelection(): StreamSelector.Selection? = selection
     private var videoUrls: List<String> = emptyList()
     private var audioUrls: List<String> = emptyList()
@@ -169,6 +172,7 @@ class BiliPlayer(context: Context) {
     var onPlaybackStutter: ((Int, Long, Float) -> Unit)? = null
 
     init {
+        AppLog.i("PlaybackPerf", "资源模式=${performanceMode.label} 媒体缓冲目标=${performanceMode.bufferMiB}MiB 弹幕目标=${performanceMode.danmakuFps}fps 上限=${performanceMode.danmakuLimit}")
         exo.addAnalyticsListener(object : AnalyticsListener {
             override fun onVideoDecoderInitialized(
                 eventTime: AnalyticsListener.EventTime, decoderName: String,
@@ -236,9 +240,11 @@ class BiliPlayer(context: Context) {
      *   P2P 只是被排到候选末尾，不用调用方操心。见 [CdnOrder.order]
      * @param cdnPreference 设置页的「指定 CDN 关键词」。空串 = 不干预
      */
-    fun play(sel: StreamSelector.Selection, skipP2p: Boolean = false, cdnPreference: String = "") {
+    fun play(sel: StreamSelector.Selection, skipP2p: Boolean = false, cdnPreference: String = "", previewEndMs: Long? = null) {
+        require(previewEndMs == null || previewEndMs in 1..Long.MAX_VALUE / 1000)
         session++
         selection = sel
+        this.previewEndMs = previewEndMs
         videoUrls = candidates(sel.video, skipP2p, cdnPreference)
         audioUrls = sel.audio?.let { candidates(it, skipP2p, cdnPreference) }.orEmpty()
         audioDisabled = audioUrls.isEmpty()
@@ -271,6 +277,7 @@ class BiliPlayer(context: Context) {
     /** 换视频先结束旧会话，取消迟到重试并释放旧媒体缓冲；复用播放器实例。 */
     fun stop() {
         session++
+        previewEndMs = null
         main.removeCallbacksAndMessages(null)
         retryPending = false
         exo.stop()
@@ -373,6 +380,7 @@ class BiliPlayer(context: Context) {
      */
     fun playLive(url: String, hls: Boolean = true) {
         session++
+        previewEndMs = null
         selection = null
         videoUrls = listOf(url)
         audioUrls = emptyList()
@@ -470,7 +478,9 @@ class BiliPlayer(context: Context) {
         val audioSource = if (audioDisabled || audioUrls.isEmpty()) null else progressive(audioUrls, null)
 
         AppLog.i("Player", "setMediaSource（音频：" + (if (audioSource == null) "关" else "开") + "）")
-        exo.setMediaSource(if (audioSource == null) videoSource else MergingMediaSource(videoSource, audioSource))
+        val merged = if (audioSource == null) videoSource else MergingMediaSource(videoSource, audioSource)
+        // Native clipping also survives audio/CDN retries; a UI timer cannot enforce a media boundary.
+        exo.setMediaSource(previewEndMs?.let { ClippingMediaSource(merged, 0, it * 1000) } ?: merged)
         exo.prepare()
         exo.playWhenReady = true
     }
