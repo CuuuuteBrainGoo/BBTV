@@ -72,7 +72,7 @@ internal fun DanmakuSettingItem(item: SettingsItem, s: SettingsStore, revision: 
             ((s.danmakuScale - .6f) / .2f).roundToInt().plus(1).coerceIn(1, 8), { "$it" },
             { commit { s.danmakuScale = .6f + (it - 1) * .2f } }, modifier)
         SettingsItem.DANMAKU_AREA -> ChoiceRow(stringResource(R.string.settings_danmaku_area), stringResource(R.string.settings_danmaku_area_hint), (1..5).toList(), s.danmakuArea,
-            { if (it == 5) context.getString(R.string.value_fullscreen) else "$it/5" }, { commit { s.danmakuArea = it; s.danmakuMaxLines = 0 } }, modifier)
+            { if (it == 5) context.getString(R.string.value_fullscreen) else "$it/5" }, { commit { s.danmakuArea = it } }, modifier)
         SettingsItem.DANMAKU_OVERLAP -> ToggleRow(stringResource(R.string.settings_danmaku_overlap), stringResource(R.string.settings_danmaku_overlap_hint), s.danmakuOverlap,
             { commit { s.danmakuOverlap = it } }, modifier)
         SettingsItem.DANMAKU_SPEED -> {

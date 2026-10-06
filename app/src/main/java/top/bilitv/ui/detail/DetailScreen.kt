@@ -22,9 +22,13 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
+import top.bilitv.R
+import top.bilitv.data.settings.uiLocale
 import top.bilitv.data.model.VideoDetail
 import top.bilitv.ui.components.BackChip
 import top.bilitv.ui.components.CinemaHero
@@ -95,7 +99,7 @@ fun DetailScreen(bvid: String, onBack: () -> Unit, onPlay: (Long) -> Unit) {
             vm.loading && detail == null -> CircularProgressIndicator(Modifier.align(Alignment.Center))
 
             detail == null -> ErrorPanel(
-                message = vm.error ?: "加载失败",
+                message = vm.error ?: stringResource(R.string.loading_failed),
                 retryButton = retryButton,
                 onRetry = { vm.retry() },
                 modifier = Modifier.align(Alignment.Center),
@@ -163,10 +167,10 @@ private fun ErrorPanel(
             modifier = Modifier
                 .focusRequester(retryButton)
                 .padding(top = 24.dp),
-            contentDescription = "重试",
+            contentDescription = stringResource(R.string.action_retry),
         ) {
             Text(
-                text = "重试",
+                text = stringResource(R.string.action_retry),
                 style = MaterialTheme.typography.titleMedium,
                 color = theme.textPrimary,
                 modifier = Modifier.padding(horizontal = CHIP_PADDING_H, vertical = CHIP_PADDING_V),
@@ -191,6 +195,7 @@ private fun ErrorPanel(
 private fun DetailContent(detail: VideoDetail, onPlay: (Long) -> Unit, playFocus: FocusRequester,
     sections: List<String>, showMeta: Boolean) {
     val theme = AppTheme.current
+    val context = LocalContext.current
 
     Column(
         modifier = Modifier
@@ -201,8 +206,8 @@ private fun DetailContent(detail: VideoDetail, onPlay: (Long) -> Unit, playFocus
         CinemaHero(
             imageUrl = detail.cover,
             title = detail.title,
-            meta = if (showMeta) detailMetaLine(detail) else "",
-            actionText = "播放",
+            meta = if (showMeta) detailMetaLine(detail, context) else "",
+            actionText = stringResource(R.string.action_play),
             // 有分P 就播第一P，和旧版一致（点页头的大按钮 = 从头看）
             onClick = { onPlay(detail.pages.firstOrNull()?.cid ?: detail.cid) },
             focusRequester = playFocus,
@@ -221,7 +226,7 @@ private fun DetailContent(detail: VideoDetail, onPlay: (Long) -> Unit, playFocus
         for (section in sections) {
         if (section == "PARTS" && detail.pages.size > 1) {
             SectionTitle(
-                text = "分P（${detail.pages.size}）",
+                text = stringResource(R.string.detail_parts_count, detail.pages.size),
                 modifier = Modifier.padding(
                     start = theme.screenPadding,
                     end = theme.screenPadding,
@@ -243,7 +248,7 @@ private fun DetailContent(detail: VideoDetail, onPlay: (Long) -> Unit, playFocus
                 items(detail.pages, key = { it.cid }) { page ->
                     TvCard(
                         onClick = { onPlay(page.cid) },
-                        contentDescription = "分P${page.index}：${page.title}，${formatDuration(page.durationSec)}",
+                        contentDescription = stringResource(R.string.detail_part_description, page.index, page.title, formatDuration(page.durationSec)),
                     ) {
                         Column(
                             modifier = Modifier.padding(
@@ -271,7 +276,7 @@ private fun DetailContent(detail: VideoDetail, onPlay: (Long) -> Unit, playFocus
 
         if (section == "DESC" && detail.desc.isNotBlank()) {
             SectionTitle(
-                text = "简介",
+                text = stringResource(R.string.detail_description),
                 modifier = Modifier.padding(
                     start = theme.screenPadding,
                     end = theme.screenPadding,
@@ -306,10 +311,10 @@ private fun SectionTitle(text: String, modifier: Modifier = Modifier) {
  * （作者名为空不画、播放量为 0 不画 —— "0 播放"是句假话）。
  * 四项全缺返回空串，`CinemaHero` 据此整行不画。
  */
-private fun detailMetaLine(d: VideoDetail): String = buildList {
+private fun detailMetaLine(d: VideoDetail, context: android.content.Context): String = buildList {
     if (d.ownerName.isNotBlank()) add(d.ownerName)
-    if (d.viewCount > 0L) add("${formatCount(d.viewCount)}播放")
-    if (d.danmakuCount > 0L) add("${formatCount(d.danmakuCount)}弹幕")
+    if (d.viewCount > 0L) add(context.getString(R.string.detail_views, formatCount(d.viewCount, context.uiLocale)))
+    if (d.danmakuCount > 0L) add(context.getString(R.string.detail_danmaku_count, formatCount(d.danmakuCount, context.uiLocale)))
     if (d.durationSec > 0) add(formatDuration(d.durationSec))
 }.joinToString(" · ")
 

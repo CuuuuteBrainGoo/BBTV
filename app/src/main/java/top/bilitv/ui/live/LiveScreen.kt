@@ -1,6 +1,7 @@
 package top.bilitv.ui.live
 
 import top.bilitv.R
+import top.bilitv.data.settings.uiLocale
 import androidx.compose.ui.res.stringResource
 
 import top.bilitv.ui.theme.pageBackground
@@ -285,7 +286,7 @@ private fun LiveTile(
             // 念一句"未开播"则是撒谎
             else -> Unit
         }
-        if (room.online > 0) append(context.getString(R.string.live_popularity_description, formatCount(room.online)))
+        if (room.online > 0) append(context.getString(R.string.live_popularity_description, formatCount(room.online, context.uiLocale)))
     }
 
     TvCard(
@@ -320,7 +321,7 @@ private fun LiveTile(
 
                 if (room.online > 0) {
                     Text(
-                        text = stringResource(R.string.live_popularity, formatCount(room.online)),
+                        text = stringResource(R.string.live_popularity, formatCount(room.online, context.uiLocale)),
                         style = TextStyle(fontSize = AppType.Tiny, fontWeight = FontWeight.Medium),
                         color = Color.White,
                         modifier = Modifier

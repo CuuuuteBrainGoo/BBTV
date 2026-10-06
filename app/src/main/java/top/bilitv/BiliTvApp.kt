@@ -1,6 +1,8 @@
 package top.bilitv
 
 import android.app.Application
+import android.content.res.Configuration
+import android.content.res.Resources
 import coil.ImageLoader
 import coil.ImageLoaderFactory
 import coil.disk.DiskCache
@@ -22,8 +24,27 @@ import top.bilitv.util.AppLog
  */
 class BiliTvApp : Application(), ImageLoaderFactory {
 
+    private var languageResources: Resources? = null
+    override fun getResources(): Resources = languageResources ?: super.getResources()
+
+    /** Use a separate resource configuration, preserving the device's locale and Activity identity. */
+    internal fun refreshLanguage() {
+        val locale = settings.interfaceLanguage.locale
+        languageResources = locale?.let {
+            val config = Configuration(baseContext.resources.configuration)
+            config.setLocale(it)
+            baseContext.createConfigurationContext(config).resources
+        }
+    }
+
+    override fun onConfigurationChanged(newConfig: Configuration) {
+        super.onConfigurationChanged(newConfig)
+        refreshLanguage()
+    }
+
     override fun onCreate() {
         super.onCreate()
+        refreshLanguage()
         // 尽早初始化：进程一挂，日志就是唯一的现场
         AppLog.init(this)
         /*

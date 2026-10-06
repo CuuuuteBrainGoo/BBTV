@@ -5,16 +5,19 @@ import android.text.Layout
 import android.util.TypedValue
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.media3.common.text.Cue
 import androidx.media3.ui.CaptionStyleCompat
 import androidx.media3.ui.SubtitleView
+import top.bilitv.R
 import top.bilitv.data.settings.SubtitleStyle
 
 /** 使用已包含的 Media3 字幕视图；不添字体、转换库或第二个播放内核。 */
 @Composable
 internal fun SubtitleLayer(text: String, enabled: Boolean, style: SubtitleStyle, modifier: Modifier = Modifier) {
     val shown = if (enabled) text else ""
+    val description = if (shown.isNotEmpty()) stringResource(R.string.player_subtitle_description, shown) else null
     val cue = remember(shown) {
         if (shown.isEmpty()) emptyList() else {
             listOf(Cue.Builder().setText(shown).setTextAlignment(Layout.Alignment.ALIGN_CENTER)
@@ -34,6 +37,6 @@ internal fun SubtitleLayer(text: String, enabled: Boolean, style: SubtitleStyle,
             ((style.background * 255 / 100) shl 24), android.graphics.Color.TRANSPARENT,
             CaptionStyleCompat.EDGE_TYPE_OUTLINE, android.graphics.Color.BLACK, Typeface.DEFAULT))
         view.setCues(cue)
-        view.contentDescription = if (shown.isNotEmpty()) "字幕：$shown" else null
+        view.contentDescription = description
     }, modifier = modifier)
 }

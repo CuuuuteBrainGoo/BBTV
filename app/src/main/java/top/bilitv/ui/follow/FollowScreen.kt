@@ -25,6 +25,7 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Text
 import androidx.compose.ui.res.stringResource
 import top.bilitv.R
+import top.bilitv.data.settings.uiLocale
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -250,7 +251,7 @@ private fun UpTile(
     val desc = buildString {
         append(up.name)
         if (up.liveRoomId > 0) append(context.getString(R.string.live_living_description))
-        if (up.fans > 0) append(context.getString(R.string.follow_fans_description, formatCount(up.fans)))
+        if (up.fans > 0) append(context.getString(R.string.follow_fans_description, formatCount(up.fans, context.uiLocale)))
         if (up.sign.isNotBlank()) append("，${up.sign}")
     }
 
@@ -320,7 +321,7 @@ private fun UpTile(
          */
         val sub = when {
             up.officialDesc.isNotBlank() -> up.officialDesc
-            up.fans > 0 -> stringResource(R.string.follow_fans, formatCount(up.fans))
+            up.fans > 0 -> stringResource(R.string.follow_fans, formatCount(up.fans, context.uiLocale))
             else -> ""
         }
         if (sub.isNotBlank()) {

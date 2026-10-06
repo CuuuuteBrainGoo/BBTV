@@ -35,6 +35,7 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -44,6 +45,7 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
+import top.bilitv.R
 import top.bilitv.ui.components.BackChip
 import top.bilitv.ui.components.FeedCard
 import top.bilitv.ui.components.FilledActionButton
@@ -110,6 +112,7 @@ fun UpSpaceScreen(
 
     LaunchedEffect(mid) { vm.load(mid) }
     DisposableEffect(vm) { onDispose { vm.stopLoading() } }
+    top.bilitv.ui.OnRefreshRequest { if (!vm.loading && !vm.moreLoading) vm.reload() }
 
     val firstCard = remember { FocusRequester() }
     val retryButton = remember { FocusRequester() }
@@ -129,23 +132,23 @@ fun UpSpaceScreen(
             Row(Modifier.fillMaxWidth().padding(horizontal = theme.screenPadding, vertical = 8.dp),
                 verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 Column(Modifier.weight(1f)) {
-                    Text(listOfNotNull(profile.level?.let { "LV$it" }, profile.fans?.let { "$it 粉丝" }).joinToString(" · "),
+                    Text(listOfNotNull(profile.level?.let { "LV$it" }, profile.fans?.let { stringResource(R.string.up_fans, it) }).joinToString(" · "),
                         color = theme.primary, style = TextStyle(fontSize = AppType.Caption))
                     if (profile.sign.isNotBlank()) Text(profile.sign, color = theme.textSecondary,
                         maxLines = 2, overflow = TextOverflow.Ellipsis, style = TextStyle(fontSize = AppType.Small))
                 }
                 if (profile.relation != null) {
                     TvCard(onClick = { vm.changeRelation(if (profile.followed) 2 else 1) }, focusedScale = 1f,
-                        contentDescription = if (profile.followed) "取消关注" else "关注") {
-                        Text(if (profile.followed) "已关注" else "关注", color = theme.primary, modifier = Modifier.padding(12.dp))
+                        contentDescription = if (profile.followed) stringResource(R.string.up_unfollow) else stringResource(R.string.up_follow)) {
+                        Text(if (profile.followed) stringResource(R.string.up_followed) else stringResource(R.string.up_follow), color = theme.primary, modifier = Modifier.padding(12.dp))
                     }
                     TvCard(onClick = { vm.changeRelation(if (profile.blocked) 6 else 5) }, focusedScale = 1f,
-                        contentDescription = if (profile.blocked) "解除拉黑" else "拉黑") {
-                        Text(if (profile.blocked) "解除拉黑" else "拉黑", color = theme.textPrimary, modifier = Modifier.padding(12.dp))
+                        contentDescription = if (profile.blocked) stringResource(R.string.up_unblock) else stringResource(R.string.up_block)) {
+                        Text(if (profile.blocked) stringResource(R.string.up_unblock) else stringResource(R.string.up_block), color = theme.textPrimary, modifier = Modifier.padding(12.dp))
                     }
                 } else TvCard(onClick = { vm.refreshProfile(); if (!vm.loggedIn) onNeedLogin() }, focusedScale = 1f,
-                    contentDescription = if (vm.loggedIn) "重新读取关注关系" else "登录后关注") {
-                    Text(if (vm.loggedIn) "刷新资料" else "登录", color = theme.primary, modifier = Modifier.padding(12.dp))
+                    contentDescription = if (vm.loggedIn) stringResource(R.string.up_refresh_relation_description) else stringResource(R.string.up_follow_after_login_description)) {
+                    Text(if (vm.loggedIn) stringResource(R.string.up_refresh_profile) else stringResource(R.string.action_login), color = theme.primary, modifier = Modifier.padding(12.dp))
                 }
             }
         }
@@ -161,12 +164,12 @@ fun UpSpaceScreen(
                     pagingError = vm.loadError,
                     loadingMore = vm.moreLoading,
                     actionLabel = when {
-                        vm.moreLoading -> "加载中"
-                        vm.loadError != null -> "重新加载"
-                        vm.canLoadMore -> "加载更多"
-                        vm.state == UpState.NEED_LOGIN -> "去登录"
-                        vm.state == UpState.ERROR -> "重新加载"
-                        else -> "返回"
+                        vm.moreLoading -> stringResource(R.string.action_loading)
+                        vm.loadError != null -> stringResource(R.string.action_reload)
+                        vm.canLoadMore -> stringResource(R.string.action_load_more)
+                        vm.state == UpState.NEED_LOGIN -> stringResource(R.string.action_sign_in)
+                        vm.state == UpState.ERROR -> stringResource(R.string.action_reload)
+                        else -> stringResource(R.string.action_back)
                     },
                     onAction = {
                         when {
@@ -204,8 +207,8 @@ fun UpSpaceScreen(
                         LoadFeedback(vm.loading, vm.loadError, vm::retry)
                     }
                     if (vm.canLoadMore && vm.loadError == null) item(span = { GridItemSpan(maxLineSpan) }) {
-                        TvCard(onClick = { vm.more() }, focusedScale = 1f, contentDescription = "加载更多投稿") {
-                            Text(if (vm.moreLoading) "正在加载…" else "加载更多", color = theme.primary, modifier = Modifier.padding(16.dp))
+                        TvCard(onClick = { vm.more() }, focusedScale = 1f, contentDescription = stringResource(R.string.up_load_more_description)) {
+                            Text(if (vm.moreLoading) stringResource(R.string.loading) else stringResource(R.string.action_load_more), color = theme.primary, modifier = Modifier.padding(16.dp))
                         }
                     }
                 }
@@ -275,14 +278,14 @@ private fun UpHeader(
 
         Column(Modifier.weight(1f)) {
             Text(
-                text = name.ifBlank { "UP 主" },
+                text = name.ifBlank { stringResource(R.string.player_creator) },
                 style = TextStyle(fontSize = AppType.H2, fontWeight = FontWeight.SemiBold),
                 color = theme.textPrimary,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
             Text(
-                text = if (count > 0) "共 $count 个投稿" else "投稿列表",
+                text = if (count > 0) stringResource(R.string.up_submission_count, count) else stringResource(R.string.up_submission_list),
                 style = TextStyle(fontSize = AppType.Caption),
                 color = theme.textTertiary,
                 modifier = Modifier.padding(top = 3.dp),
@@ -311,30 +314,29 @@ private fun UpNotice(
         verticalArrangement = Arrangement.Center,
     ) {
         Text(
-            text = if (loadingMore) "正在加载投稿…" else if (pagingError != null) pagingError
-                else if (filteredPage) "这一页没有可播放的投稿" else when (state) {
-                UpState.NEED_LOGIN -> "看 UP 主的投稿需要登录"
-                UpState.EMPTY -> "他没有公开的投稿"
-                UpState.ERROR -> "拿不到他的投稿列表"
+            text = if (loadingMore) stringResource(R.string.up_loading_submissions) else if (pagingError != null) pagingError
+                else if (filteredPage) stringResource(R.string.up_page_empty) else when (state) {
+                UpState.NEED_LOGIN -> stringResource(R.string.up_need_login)
+                UpState.EMPTY -> stringResource(R.string.up_empty)
+                UpState.ERROR -> stringResource(R.string.up_error)
                 // 不该走到这里（调用方只在"列表空且不在加载中"时渲染这一屏）。
                 // 写出来是因为 `when` 当表达式用必须穷尽，留一句话而不是留空白。
-                UpState.LOADING, UpState.READY -> "状态异常，按返回再进一次"
+                UpState.LOADING, UpState.READY -> stringResource(R.string.up_state_error)
             },
             style = TextStyle(fontSize = AppType.H2, fontWeight = FontWeight.SemiBold),
             color = theme.textPrimary,
             textAlign = TextAlign.Center,
         )
         Text(
-            text = if (filteredPage || pagingError != null) "可以继续加载或重试；已成功的页码会保留。" else when (state) {
+            text = if (filteredPage || pagingError != null) stringResource(R.string.up_paging_hint) else when (state) {
                 UpState.NEED_LOGIN ->
-                    "B 站对「UP 主投稿列表」这个接口有登录要求，没登录时它会直接拒绝，" +
-                        "不是网络问题也不是我们的 bug。扫码登录一次就行。"
+                    stringResource(R.string.up_need_login_hint)
                 UpState.EMPTY ->
-                    "这个账号可能只发专栏或动态，没有视频投稿。回关注列表换一个看看。"
+                    stringResource(R.string.up_empty_hint)
                 UpState.ERROR ->
-                    "接口可能变了或网络不通。已经登录了还是这样，就是服务端的问题，看日志能有线索。"
+                    stringResource(R.string.up_error_hint)
                 UpState.LOADING, UpState.READY ->
-                    "这一屏本来不该出现，麻烦把日志发我。"
+                    stringResource(R.string.up_state_error_hint)
             },
             style = TextStyle(fontSize = AppType.Body3, lineHeight = 22.sp),
             color = theme.textSecondary,

@@ -180,7 +180,7 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
                 AppLog.i("Home", "${which.id} 刷新 ${result.items.size} 条（hasMore=$hasMore）")
             } catch (e: CancellationException) { throw e }
             catch (e: Exception) {
-                if (g == gen) { error = if (items.isEmpty()) "加载失败，请重试" else "加载失败，已保留现有内容，请重试"; AppLog.w("Home", e.javaClass.simpleName) }
+                if (g == gen) { error = graph.getString(if (items.isEmpty()) R.string.loading_failed else R.string.loading_failed_keep); AppLog.w("Home", e.javaClass.simpleName) }
             } finally { if (g == gen) { loading = false; inFlight = false } }
         }
     }
@@ -209,7 +209,7 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
                 AppLog.i("Home", "${which.id} 追加 ${more.items.size} 条（累计 ${items.size}）")
             } catch (e: CancellationException) { throw e }
             catch (e: Exception) {
-                if (g == gen) { failedMore = true; error = "加载更多失败，已有内容仍可观看，请重试"; AppLog.w("Home", e.javaClass.simpleName) }
+                if (g == gen) { failedMore = true; error = graph.getString(R.string.loading_more_failed_keep); AppLog.w("Home", e.javaClass.simpleName) }
             } finally { if (g == gen) { loadingMore = false; inFlight = false } }
         }
     }

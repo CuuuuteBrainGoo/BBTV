@@ -1,6 +1,7 @@
 package top.bilitv.ui.player
 
 import top.bilitv.ui.components.verticalScrollbar
+import top.bilitv.ui.components.fixedScheme
 import androidx.compose.foundation.background
 import androidx.compose.foundation.focusGroup
 import androidx.compose.foundation.layout.*
@@ -15,10 +16,17 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.unit.dp
+import coil.compose.AsyncImage
+import coil.request.ImageRequest
+import top.bilitv.R
 import top.bilitv.ui.components.RequestFocusOnAppear
 import top.bilitv.ui.components.TvCard
 import top.bilitv.ui.theme.AppTheme
@@ -37,12 +45,12 @@ internal fun PlayerSidebar(vm: PlayerViewModel, onClose: () -> Unit, onSettings:
         .background(Color(0xF20B0B10)).focusProperties { exit = { FocusRequester.Cancel } }.focusGroup()
         .padding(if (maxHeight < 320.dp) 8.dp else 12.dp)) {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            TvCard(onClick = onClose, modifier = Modifier.weight(1f).heightIn(min = 48.dp).focusRequester(closeFocus), focusedScale = 1f, contentDescription = "关闭侧栏，返回播放") {
-                Text("关闭 · 返回播放", color = theme.textPrimary, maxLines = 2, overflow = TextOverflow.Ellipsis,
+            TvCard(onClick = onClose, modifier = Modifier.weight(1f).heightIn(min = 48.dp).focusRequester(closeFocus), focusedScale = 1f, contentDescription = stringResource(R.string.player_close_sidebar_description)) {
+                Text(stringResource(R.string.player_close_back), color = theme.textPrimary, maxLines = 2, overflow = TextOverflow.Ellipsis,
                     textAlign = TextAlign.Center, modifier = Modifier.align(Alignment.Center).padding(8.dp))
             }
-            TvCard(onClick = onSettings, modifier = Modifier.weight(1f).heightIn(min = 48.dp), focusedScale = 1f, contentDescription = "弹幕/字幕设置") {
-                Text("弹幕/字幕设置", color = theme.textPrimary, maxLines = 2, overflow = TextOverflow.Ellipsis,
+            TvCard(onClick = onSettings, modifier = Modifier.weight(1f).heightIn(min = 48.dp), focusedScale = 1f, contentDescription = stringResource(R.string.player_danmaku_settings)) {
+                Text(stringResource(R.string.player_danmaku_settings), color = theme.textPrimary, maxLines = 2, overflow = TextOverflow.Ellipsis,
                     textAlign = TextAlign.Center, modifier = Modifier.align(Alignment.Center).padding(8.dp))
             }
         }
@@ -50,7 +58,7 @@ internal fun PlayerSidebar(vm: PlayerViewModel, onClose: () -> Unit, onSettings:
         Row(Modifier.weight(1f), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             if (vm.sideParts.isNotEmpty()) {
                 Column(Modifier.weight(.8f)) {
-                    Text("分P", color = theme.primary, style = MaterialTheme.typography.titleMedium)
+                    Text(stringResource(R.string.detail_parts), color = theme.primary, style = MaterialTheme.typography.titleMedium)
                     SidebarItems(vm.sideParts, vm, Modifier.fillMaxSize())
                 }
             }
@@ -58,14 +66,14 @@ internal fun PlayerSidebar(vm: PlayerViewModel, onClose: () -> Unit, onSettings:
                 Text(vm.sideTitle, color = theme.primary, style = MaterialTheme.typography.titleMedium,
                     maxLines = 2, overflow = TextOverflow.Ellipsis)
                 LazyColumn(Modifier.fillMaxSize().verticalScrollbar(listState), state = listState, verticalArrangement = Arrangement.spacedBy(8.dp), contentPadding = PaddingValues(vertical = 12.dp)) {
-                    items(vm.sideItems, key = { "${it.bvid}/${it.epId}/${it.seasonId}" }) { item -> SidebarItem(item, vm) }
+                    items(vm.sideItems, key = { "${it.bvid}/${it.epId}/${it.seasonId}" }) { item -> SidebarItem(item, vm, showCover = true) }
                     item {
                         if (vm.sideLoading) CircularProgressIndicator(color = theme.primary, modifier = Modifier.size(26.dp))
                         else if (vm.sideError != null) {
                             Text(vm.sideError.orEmpty(), color = theme.textSecondary)
-                            SidebarAction("重新加载", vm::loadSidebarMore)
-                        } else if (vm.sideHasMore) SidebarAction("加载更多", vm::loadSidebarMore)
-                        else Text(if (vm.sideItems.isEmpty()) "暂无可用视频" else "已显示全部", color = theme.textSecondary)
+                            SidebarAction(stringResource(R.string.action_reload), vm::loadSidebarMore)
+                        } else if (vm.sideHasMore) SidebarAction(stringResource(R.string.action_load_more), vm::loadSidebarMore)
+                        else Text(if (vm.sideItems.isEmpty()) stringResource(R.string.player_unavailable_videos) else stringResource(R.string.player_all_shown), color = theme.textSecondary)
                     }
                 }
             }
@@ -79,18 +87,48 @@ internal fun PlayerSidebar(vm: PlayerViewModel, onClose: () -> Unit, onSettings:
 private fun SidebarItems(items: List<NextTarget>, vm: PlayerViewModel, modifier: Modifier) {
     val listState = androidx.compose.foundation.lazy.rememberLazyListState()
     LazyColumn(modifier.verticalScrollbar(listState), state = listState, verticalArrangement = Arrangement.spacedBy(8.dp), contentPadding = PaddingValues(vertical = 12.dp)) {
-        items(items, key = { it.cid }) { SidebarItem(it, vm) }
+        // 分P 列表不显示封面，只保留文字行（封面位在窄栏里会挤掉标题）。
+        items(items, key = { it.cid }) { SidebarItem(it, vm, showCover = false) }
     }
 }
 
+/** 侧栏缩略图显示尺寸（16:9）。 */
+private val SidebarCoverWidth = 84.dp
+private val SidebarCoverHeight = 47.25f.dp
+
+/** 分P 保留文字行；其他视频列表使用按显示尺寸解码的封面。 */
 @Composable
-private fun SidebarItem(item: NextTarget, vm: PlayerViewModel) {
+private fun SidebarItem(item: NextTarget, vm: PlayerViewModel, showCover: Boolean) {
     val theme = AppTheme.current
     val current = vm.sideItemCurrent(item)
+    val cover = item.cover
+    val coverRequest = if (showCover && cover.isNotBlank()) {
+        val density = LocalDensity.current
+        val widthPx = with(density) { SidebarCoverWidth.roundToPx() }
+        val heightPx = with(density) { SidebarCoverHeight.roundToPx() }
+        ImageRequest.Builder(LocalContext.current)
+            .data(cover.fixedScheme())
+            .size(widthPx, heightPx)
+            .build()
+    } else null
     TvCard(onClick = { vm.playSideItem(item) }, modifier = Modifier.fillMaxWidth(), focusedScale = 1f,
-        contentDescription = (if (current) "正在播放，" else "播放，") + item.title) {
-        Text((if (current) "▶ " else "") + item.title, color = if (current) theme.primary else theme.textPrimary,
-            maxLines = 3, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(12.dp))
+        contentDescription = stringResource(if (current) R.string.player_now_playing_description else R.string.player_play_description, item.title)) {
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(8.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            if (coverRequest != null) {
+                AsyncImage(
+                    model = coverRequest,
+                    contentDescription = null,
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier.width(SidebarCoverWidth).height(SidebarCoverHeight),
+                )
+            }
+            Text((if (current) "▶ " else "") + item.title, color = if (current) theme.primary else theme.textPrimary,
+                maxLines = 3, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+        }
     }
 }
 

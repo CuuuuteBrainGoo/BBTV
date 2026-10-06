@@ -3,23 +3,40 @@ package top.bilitv.ui.player
 import android.widget.TextView
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.viewinterop.AndroidView
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
+import top.bilitv.R
 
 @Composable
 internal fun PlaybackStats(vm: PlayerViewModel, modifier: Modifier) {
     var text by remember { mutableStateOf("") }
-    LaunchedEffect(vm) {
+    val context = LocalContext.current
+    LaunchedEffect(vm, context) {
         while (isActive) {
             val exo = vm.player.exo
             val counters = exo.videoDecoderCounters?.also { it.ensureUpdated() }
             val video = exo.videoFormat; val audio = exo.audioFormat
+            val bufferState = when {
+                exo.isPlaying -> context.getString(R.string.player_playing)
+                exo.playWhenReady -> context.getString(R.string.action_loading)
+                else -> context.getString(R.string.player_paused)
+            }
             text = "${vm.qualityLabel} · ${vm.speedLabel}\n" +
-                "${video?.width ?: 0}×${video?.height ?: 0} · ${video?.sampleMimeType ?: "等待视频"}\n" +
-                "帧率 ${video?.frameRate?.takeIf { it > 0 }?.toInt() ?: 0} · 渲染 ${counters?.renderedOutputBufferCount ?: 0} · 掉帧 ${counters?.droppedBufferCount ?: 0}\n" +
-                "缓冲 ${exo.totalBufferedDuration / 1000}s · ${if (exo.isPlaying) "播放中" else if (exo.playWhenReady) "加载中" else "已暂停"}\n" +
-                "音频 ${audio?.sampleMimeType ?: "无"} · ${audio?.channelCount?.coerceAtLeast(0) ?: 0} 声道"
+                "${video?.width ?: 0}×${video?.height ?: 0} · ${video?.sampleMimeType ?: context.getString(R.string.player_stats_waiting_video)}\n" +
+                context.getString(
+                    R.string.player_stats_frame_rate,
+                    video?.frameRate?.takeIf { it > 0 }?.toInt() ?: 0,
+                    counters?.renderedOutputBufferCount ?: 0,
+                    counters?.droppedBufferCount ?: 0,
+                ) + "\n" +
+                context.getString(R.string.player_stats_buffer, exo.totalBufferedDuration / 1000, bufferState) + "\n" +
+                context.getString(
+                    R.string.player_stats_audio,
+                    audio?.sampleMimeType ?: context.getString(R.string.player_stats_none),
+                    audio?.channelCount?.coerceAtLeast(0) ?: 0,
+                )
             delay(1000)
         }
     }

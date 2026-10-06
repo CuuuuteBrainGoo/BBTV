@@ -133,7 +133,9 @@ fun itemBody(
         SettingsItem.RECOMMEND_BACKTRACK -> {
             var enabled by remember { mutableStateOf(settings.showRecommendBacktrack) }
             ToggleRow(stringResource(R.string.settings_backtrack), stringResource(R.string.settings_backtrack_hint),
-                enabled, { enabled = it; settings.showRecommendBacktrack = it }, backLeft)
+                enabled, { enabled = it; settings.showRecommendBacktrack = it }, backLeft
+                    .then(if (firstFocus != null) Modifier.focusRequester(firstFocus) else Modifier)
+                    .focusProperties { if (headUp != null) up = headUp; if (tailDown != null) down = tailDown })
         }
         SettingsItem.DETAIL_LAYOUT -> {
             var ids by remember { mutableStateOf(settings.detailSections) }

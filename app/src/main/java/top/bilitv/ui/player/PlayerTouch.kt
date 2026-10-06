@@ -23,7 +23,9 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.key.*
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
+import top.bilitv.R
 import top.bilitv.ui.components.formatDuration
 import top.bilitv.ui.theme.AppTheme
 import kotlin.math.abs
@@ -56,6 +58,9 @@ internal fun PlayerTouch(vm: PlayerViewModel, modifier: Modifier, tap: () -> Uni
     var hint by remember { mutableStateOf<String?>(null) }
     var levelHint by remember { mutableStateOf<Pair<String, Float>?>(null) }
     var verticalDrag by remember { mutableStateOf(false) }
+    val boostHint = stringResource(R.string.player_temp_boost)
+    val brightnessLabel = stringResource(R.string.player_brightness)
+    val volumeLabel = stringResource(R.string.player_volume)
     DisposableEffect(vm) {
         onDispose {
             vm.finishTouchSeek(cancel = true); vm.endTouchBoost()
@@ -70,19 +75,19 @@ internal fun PlayerTouch(vm: PlayerViewModel, modifier: Modifier, tap: () -> Uni
     }
     val latestTap by rememberUpdatedState(tap)
     Box(modifier
-        .pointerInput(vm, enabled) {
+        .pointerInput(vm, enabled, boostHint) {
             if (!enabled) return@pointerInput
             detectTapGestures(onTap = { latestTap() }, onDoubleTap = if (vm.danmakuSettings.touchDoubleTap) ({ vm.togglePlay() }) else null,
                 onLongPress = {
                     if (vm.danmakuSettings.touchBoost && vm.beginTouchBoost()) {
                         view.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
-                        hint = "临时 2 倍速"
+                        hint = boostHint
                     }
                 }, onPress = {
                     try { awaitRelease() } finally { vm.endTouchBoost() }
                 })
         }
-        .pointerInput(vm, enabled) {
+        .pointerInput(vm, enabled, brightnessLabel, volumeLabel) {
             if (!enabled) return@pointerInput
             var origin = 0L; var start = Offset.Zero; var delta = Offset.Zero
             var mode = 0; var volume = 0; var appliedVolume = 0; var brightness = .5f
@@ -117,7 +122,7 @@ internal fun PlayerTouch(vm: PlayerViewModel, modifier: Modifier, tap: () -> Uni
                     2 -> {
                         val next = (brightness - delta.y / size.height.coerceAtLeast(1)).coerceIn(.01f, 1f)
                         activity?.window?.let { window -> window.attributes = window.attributes.apply { screenBrightness = next } }
-                        levelHint = "亮度" to next
+                        levelHint = brightnessLabel to next
                     }
                     3 -> {
                         val max = audio.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
@@ -125,7 +130,7 @@ internal fun PlayerTouch(vm: PlayerViewModel, modifier: Modifier, tap: () -> Uni
                         if (next != appliedVolume) {
                             audio.setStreamVolume(AudioManager.STREAM_MUSIC, next, 0); appliedVolume = next
                         }
-                        levelHint = "音量" to (next.toFloat() / max.coerceAtLeast(1))
+                        levelHint = volumeLabel to (next.toFloat() / max.coerceAtLeast(1))
                     }
                 }
             }, onDragEnd = { vm.finishTouchSeek(); dragging(false); verticalDrag = false },

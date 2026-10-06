@@ -17,7 +17,6 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.ui.input.key.*
-import top.bilitv.BiliTvApp
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -41,6 +40,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
+import top.bilitv.R
+import top.bilitv.data.settings.uiLocale
 import top.bilitv.data.model.FeedItem
 import top.bilitv.ui.theme.AppTheme
 import top.bilitv.ui.theme.AppType
@@ -157,10 +158,8 @@ fun FeedCard(
 ) {
     val theme = AppTheme.current
     val context = LocalContext.current
-    val settings = (context.applicationContext as? BiliTvApp)?.settings
     val ownFocus = remember { FocusRequester() }
     val cardFocus = focusRequester ?: ownFocus
-    val openMenu = rememberVideoCardMenu(item.title, onClick, cardFocus)
     val titleBoxHeight = with(LocalDensity.current) { TITLE_LINE_HEIGHT.toDp() * 2 + 4.dp }
     val textHeight = with(LocalDensity.current) { titleBoxHeight + MetaSize.toDp() * 1.4f + 6.dp }
     // Short windows must leave room for the header and both text lines, even for one wide card.
@@ -171,7 +170,7 @@ fun FeedCard(
         append(item.title)
         if (!badge.isNullOrBlank()) append("，$badge")
         if (item.ownerName.isNotBlank()) append("，${item.ownerName}")
-        if (item.viewCount > 0) append("，${formatCount(item.viewCount)}播放")
+        if (item.viewCount > 0) append("，").append(context.getString(R.string.detail_views, formatCount(item.viewCount, context.uiLocale)))
         if (item.durationSec > 0) append("，${formatDuration(item.durationSec)}")
     }
 
@@ -182,8 +181,8 @@ fun FeedCard(
             //   2026-09-29 此参数曾被漏接进链里 —— 编译器不吭声，"自动给第一张卡焦点"整条静默失效。
             .focusRequester(cardFocus)
             .onPreviewKeyEvent { e ->
-                if (manageMode || e.key != Key.Menu || settings?.cardMenuOnMenuKey == false) false
-                else { if (e.type == KeyEventType.KeyUp && !e.nativeKeyEvent.isCanceled) openMenu(); true }
+                if (e.key != Key.Menu) false
+                else { if (e.type == KeyEventType.KeyUp && !e.nativeKeyEvent.isCanceled) top.bilitv.ui.RefreshBus.request(); true }
             }
             // 焦点链已收编进 focusRing（`docs/audit/A9` §7.3）。
             // onFocused 用来记"上次焦点在哪"，返回时好落回原处。
@@ -191,7 +190,7 @@ fun FeedCard(
             // elevateOnFocus：焦点描边+垫色会压到相邻卡片，必须抬到最上层。
             // 不放大（密排网格放大 = 卡片互相撞），所以 scaleOnFocus 保持默认 1f。
             .observeFocus { onFocused?.invoke(it) }
-            .focusRing(contentDescription = desc, elevateOnFocus = true, onClick = onClick, onLongClick = openMenu.takeUnless { manageMode })
+            .focusRing(contentDescription = desc, elevateOnFocus = true, onClick = onClick)
             .padding(FOCUS_RING_INSET),
     ) {
         Box(
@@ -265,10 +264,10 @@ fun FeedCard(
                 Row(Modifier.weight(1f), horizontalArrangement = Arrangement.spacedBy(4.dp),
                     verticalAlignment = Alignment.CenterVertically) {
                     if (item.viewCount > 0) {
-                        Pill(modifier = Modifier.weight(1f, fill = false), text = formatCount(item.viewCount)) { PlayGlyph() }
+                        Pill(modifier = Modifier.weight(1f, fill = false), text = formatCount(item.viewCount, context.uiLocale)) { PlayGlyph() }
                     }
                     if (item.danmakuCount > 0) {
-                        Pill(modifier = Modifier.weight(1f, fill = false), text = formatCount(item.danmakuCount)) { DanmakuGlyph() }
+                        Pill(modifier = Modifier.weight(1f, fill = false), text = formatCount(item.danmakuCount, context.uiLocale)) { DanmakuGlyph() }
                     }
                 }
                 if (item.durationSec > 0) Pill(text = formatDuration(item.durationSec))
@@ -352,7 +351,7 @@ fun FeedCard(
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.weight(1f),
                 )
-                val date = formatPubDate(item.pubDateSec)
+                val date = formatPubDate(item.pubDateSec, locale = context.uiLocale)
                 if (date.isNotBlank()) {
                     Text(
                         text = date,

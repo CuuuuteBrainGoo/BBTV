@@ -34,7 +34,9 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.LocalViewConfiguration
 import androidx.compose.ui.platform.ViewConfiguration
+import androidx.compose.ui.res.stringResource
 import android.view.HapticFeedbackConstants
+import top.bilitv.R
 import top.bilitv.ui.components.RequestFocusOnAppear
 import top.bilitv.ui.components.TvCard
 import top.bilitv.ui.theme.AppTheme
@@ -81,6 +83,7 @@ internal fun PlayerIconButton(
     var pending by remember { mutableStateOf<Job?>(null) }
     val click by rememberUpdatedState(onClick)
     val longClick by rememberUpdatedState(onLongClick)
+    val longClickDescription = if (danmakuGlyph) stringResource(R.string.player_danmaku_settings) else stringResource(R.string.remote_triple)
     fun cancelHold() { pending?.cancel(); pending = null; hold.cancel() }
     DisposableEffect(Unit) { onDispose { cancelHold() } }
     CompositionLocalProvider(LocalViewConfiguration provides touchConfiguration) {
@@ -93,7 +96,7 @@ internal fun PlayerIconButton(
                     view.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS); longClick?.invoke()
                 })
             }.semantics {
-            if (longClick != null) accessibilityLongClick(if (danmakuGlyph) "弹幕/字幕设置" else "一键三连") { longClick?.invoke(); true }
+            if (longClick != null) accessibilityLongClick(longClickDescription) { longClick?.invoke(); true }
         }.onPreviewKeyEvent { event ->
             if (longClick == null || event.key !in listOf(Key.DirectionCenter, Key.Enter, Key.NumPadEnter)) false
             else {
@@ -154,14 +157,14 @@ internal fun PlayerActionDialogs(vm: PlayerViewModel, onExit: () -> Unit, onClos
         Dialog(onDismissRequest = onExit) {
             Column(Modifier.fillMaxWidth().heightIn(max = 400.dp).background(theme.surface, RoundedCornerShape(12.dp))
                 .scrollWithScrollbar().padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text("试看已结束", color = theme.textPrimary)
-                Text("当前接口提供的试看片段已播放完。如需观看完整视频，请在哔哩哔哩确认账号观看权限。", color = theme.textSecondary)
+                Text(stringResource(R.string.player_preview_ended), color = theme.textPrimary)
+                Text(stringResource(R.string.player_preview_ended_hint), color = theme.textSecondary)
                 TvCard(onClick = { vm.replayPreview(); onClosed() }, modifier = Modifier.fillMaxWidth().focusRequester(first),
-                    focusedScale = 1f, contentDescription = "重新试看") {
-                    Text("重新试看", color = theme.primary, modifier = Modifier.padding(12.dp))
+                    focusedScale = 1f, contentDescription = stringResource(R.string.player_replay_preview)) {
+                    Text(stringResource(R.string.player_replay_preview), color = theme.primary, modifier = Modifier.padding(12.dp))
                 }
-                TvCard(onClick = onExit, modifier = Modifier.fillMaxWidth(), focusedScale = 1f, contentDescription = "返回视频列表") {
-                    Text("返回视频列表", color = theme.textPrimary, modifier = Modifier.padding(12.dp))
+                TvCard(onClick = onExit, modifier = Modifier.fillMaxWidth(), focusedScale = 1f, contentDescription = stringResource(R.string.player_back_to_list)) {
+                    Text(stringResource(R.string.player_back_to_list), color = theme.textPrimary, modifier = Modifier.padding(12.dp))
                 }
             }
             RequestFocusOnAppear(first, true)
@@ -174,14 +177,14 @@ internal fun PlayerActionDialogs(vm: PlayerViewModel, onExit: () -> Unit, onClos
         Dialog(onDismissRequest = { choose(false) }) {
             Column(Modifier.fillMaxWidth().heightIn(max = 400.dp).background(theme.surface, RoundedCornerShape(12.dp))
                 .scrollWithScrollbar().padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text("上次看到 ${top.bilitv.ui.components.formatDuration((target / 1000).toInt())}", color = theme.textPrimary)
+                Text(stringResource(R.string.player_resume_from, top.bilitv.ui.components.formatDuration((target / 1000).toInt())), color = theme.textPrimary)
                 TvCard(onClick = { choose(false) }, modifier = Modifier.fillMaxWidth().focusRequester(first),
-                    focusedScale = 1f, contentDescription = "继续播放") {
-                    Text("继续播放", color = theme.primary, modifier = Modifier.padding(12.dp))
+                    focusedScale = 1f, contentDescription = stringResource(R.string.player_resume)) {
+                    Text(stringResource(R.string.player_resume), color = theme.primary, modifier = Modifier.padding(12.dp))
                 }
                 TvCard(onClick = { choose(true) }, modifier = Modifier.fillMaxWidth(),
-                    focusedScale = 1f, contentDescription = "从头播放") {
-                    Text("从头播放", color = theme.textPrimary, modifier = Modifier.padding(12.dp))
+                    focusedScale = 1f, contentDescription = stringResource(R.string.player_play_from_start)) {
+                    Text(stringResource(R.string.player_play_from_start), color = theme.textPrimary, modifier = Modifier.padding(12.dp))
                 }
             }
             RequestFocusOnAppear(first, true)
@@ -194,20 +197,20 @@ internal fun PlayerActionDialogs(vm: PlayerViewModel, onExit: () -> Unit, onClos
         Dialog(onDismissRequest = { vm.closeFavorites(); onClosed() }) {
             Column(Modifier.fillMaxWidth().heightIn(max = 420.dp).background(theme.surface, RoundedCornerShape(12.dp))
                 .scrollWithScrollbar(rememberScrollState()).padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text("收藏夹", color = theme.textPrimary)
-                if (folders.isEmpty()) Text("暂无收藏夹，请在 B 站创建后重试", color = theme.textSecondary)
+                Text(stringResource(R.string.player_favorites_title), color = theme.textPrimary)
+                if (folders.isEmpty()) Text(stringResource(R.string.player_no_favorites), color = theme.textSecondary)
                 folders.forEachIndexed { i, folder ->
                     TvCard(onClick = { if (!vm.actionBusy) selected = if (folder.id in selected) selected - folder.id else selected + folder.id },
                         modifier = Modifier.fillMaxWidth().then(if (i == 0) Modifier.focusRequester(first) else Modifier),
-                        focusedScale = 1f, contentDescription = folder.title + if (folder.id in selected) "，已选" else "，未选") {
+                        focusedScale = 1f, contentDescription = folder.title + if (folder.id in selected) stringResource(R.string.player_folder_selected) else stringResource(R.string.player_folder_unselected)) {
                         Text((if (folder.id in selected) "✓  " else "    ") + folder.title,
                             color = theme.textPrimary, modifier = Modifier.padding(12.dp))
                     }
                 }
                 TvCard(onClick = { vm.saveFavorites(selected) }, focusedScale = 1f,
                     modifier = if (folders.isEmpty()) Modifier.focusRequester(first) else Modifier,
-                    contentDescription = if (vm.actionBusy) "正在保存收藏" else "保存收藏") {
-                    Text(if (vm.actionBusy) "正在保存…" else "保存", color = theme.primary, modifier = Modifier.padding(12.dp))
+                    contentDescription = if (vm.actionBusy) stringResource(R.string.player_saving_favorites) else stringResource(R.string.player_save_favorites)) {
+                    Text(if (vm.actionBusy) stringResource(R.string.player_saving) else stringResource(R.string.action_save), color = theme.primary, modifier = Modifier.padding(12.dp))
                 }
             }
             RequestFocusOnAppear(first, true)
@@ -218,12 +221,13 @@ internal fun PlayerActionDialogs(vm: PlayerViewModel, onExit: () -> Unit, onClos
         Dialog(onDismissRequest = { vm.qualityDialog = false; onClosed() }) {
             Column(Modifier.fillMaxWidth().heightIn(max = 400.dp).background(theme.surface, RoundedCornerShape(12.dp))
                 .scrollWithScrollbar(rememberScrollState()).padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text("画质", color = theme.textPrimary)
+                Text(stringResource(R.string.player_quality), color = theme.textPrimary)
                 vm.availableQualities.forEachIndexed { i, (id, label) ->
+                    val currentId = if (vm.live) vm.activeLiveLine?.qn else vm.activeQuality
                     TvCard(onClick = { vm.changeQuality(id); vm.qualityDialog = false; onClosed() }, focusedScale = 1f,
                         modifier = Modifier.fillMaxWidth().then(if (i == 0) Modifier.focusRequester(first) else Modifier),
-                        contentDescription = label + if (id == if (vm.live) vm.activeLiveLine?.qn else vm.activeQuality) "，当前" else "") {
-                        Text(label + if (id == if (vm.live) vm.activeLiveLine?.qn else vm.activeQuality) "  ✓" else "", color = theme.textPrimary, modifier = Modifier.padding(12.dp))
+                        contentDescription = label + if (id == currentId) stringResource(R.string.player_current_suffix) else "") {
+                        Text(if (id == currentId) stringResource(R.string.player_quality_current, label) else label, color = theme.textPrimary, modifier = Modifier.padding(12.dp))
                     }
                 }
             }
@@ -235,9 +239,9 @@ internal fun PlayerActionDialogs(vm: PlayerViewModel, onExit: () -> Unit, onClos
         Dialog(onDismissRequest = { vm.liveLineDialog = false; onClosed() }) {
             Column(Modifier.fillMaxWidth().heightIn(max = 400.dp).background(theme.surface, RoundedCornerShape(12.dp))
                 .scrollWithScrollbar(rememberScrollState()).padding(16.dp)) {
-                Text("直播线路", color = theme.textPrimary)
+                Text(stringResource(R.string.player_live_source), color = theme.textPrimary)
                 vm.liveLines.forEachIndexed { i, (line, index) ->
-                    val label = "线路 ${i + 1} · ${line.format.uppercase()} · ${line.codec.uppercase()}"
+                    val label = stringResource(R.string.player_live_line_label, i + 1, line.format.uppercase(), line.codec.uppercase())
                     TvCard(onClick = { vm.useLiveLine(line, index); vm.liveLineDialog = false; onClosed() }, focusedScale = 1f,
                         modifier = Modifier.fillMaxWidth().then(if (i == 0) Modifier.focusRequester(first) else Modifier), contentDescription = label) {
                         Text(label, color = theme.textPrimary, modifier = Modifier.padding(12.dp))

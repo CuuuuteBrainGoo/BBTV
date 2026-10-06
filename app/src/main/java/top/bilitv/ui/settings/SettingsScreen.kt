@@ -105,7 +105,7 @@ fun SettingsScreen(
     val appearanceItems = SettingsCatalog.itemsIn(SettingsCategory.APPEARANCE, true)
     val starts = remember { appearanceItems.associateWith { FocusRequester() } }
     val ends = remember {
-        appearanceItems.associateWith { if (it in setOf(SettingsItem.SKIN, SettingsItem.BACKGROUND_COLOR, SettingsItem.APPEARANCE_RESET)) starts.getValue(it) else FocusRequester() }
+        appearanceItems.associateWith { if (it in setOf(SettingsItem.SKIN, SettingsItem.BACKGROUND_COLOR, SettingsItem.RECOMMEND_BACKTRACK, SettingsItem.APPEARANCE_RESET)) starts.getValue(it) else FocusRequester() }
     }
     var focusOnEntry by remember { mutableStateOf(true) }
 

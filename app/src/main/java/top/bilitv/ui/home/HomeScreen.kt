@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items as gridItems
@@ -17,6 +18,8 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.derivedStateOf
+import androidx.compose.runtime.structuralEqualityPolicy
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
@@ -27,6 +30,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.input.InputMode
+import androidx.compose.ui.platform.LocalInputModeManager
 import top.bilitv.R
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
@@ -47,7 +52,9 @@ import top.bilitv.ui.theme.AppTheme
 import top.bilitv.ui.theme.AppType
 import top.bilitv.ui.RefreshBus
 import androidx.compose.runtime.snapshotFlow
-import androidx.compose.material3.pulltorefresh.PullToRefreshBox
+import androidx.compose.material3.pulltorefresh.PullToRefreshDefaults
+import androidx.compose.material3.pulltorefresh.pullToRefresh
+import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
 import androidx.compose.material3.ExperimentalMaterial3Api
 import kotlinx.coroutines.delay
 import androidx.compose.runtime.mutableIntStateOf
@@ -117,6 +124,11 @@ fun HomeScreen(
     val gridState = rememberLazyGridState()
     val firstCard = remember { FocusRequester() }
     val retryButton = remember { FocusRequester() }
+    val touchRefresh = LocalInputModeManager.current.inputMode == InputMode.Touch
+    val pullState = rememberPullToRefreshState()
+    LaunchedEffect(touchRefresh) {
+        if (!touchRefresh) pullState.snapTo(0f)
+    }
 
     /*
      * 每个标签各自记住"上次焦点在哪张卡"，回来时还落回它。
@@ -188,11 +200,15 @@ fun HomeScreen(
     val cards = list
 
     /*
-     * 记住的是**这一条卡的稳定标识**：UGC 用 bvid、PGC 用 seasonId。
-     * ⚠️ 不能统一用 bvid —— PGC 卡的 bvid 是空串，那样所有 PGC 卡会共用同一个 key。
+     * 只按 `cards` 算一次"合法卡 key 集合 + 首卡 key"。
+     *
+     * ⛔ 不在这里读 `lastFocused`：那张表在**每次卡片焦点变化**时都会被写，
+     * 屏幕级读它 = 焦点移动变成整个网格的重组输入。谁才是入口落点，
+     * 交给下面每个 item 自己派生（见 gridItems 里的说明）。
+     * key 仍是 `cardKey()`（UGC bvid / PGC seasonId），PGC 的 bvid 是空串所以不能统一用 bvid。
      */
-    val remembered = lastFocused[tab.id]?.takeIf { key -> cards.any { it.cardKey() == key } }
-    val defaultKey = remembered ?: cards.firstOrNull()?.cardKey()
+    val validKeys = remember(cards) { cards.mapTo(HashSet()) { it.cardKey() } }
+    val firstKey = remember(cards) { cards.firstOrNull()?.cardKey() }
 
     Column(modifier = Modifier.fillMaxSize()) {
         SectionTabBar(
@@ -230,10 +246,14 @@ fun HomeScreen(
          */
         if (tab == HomeSection.RECOMMEND && vm.recommendNotice != null) Text(vm.recommendNotice!!,
             color = theme.textSecondary, fontSize = 12.sp, modifier = Modifier.padding(horizontal = theme.screenPadding, vertical = 4.dp))
-        PullToRefreshBox(
-            isRefreshing = vm.loading && list.isNotEmpty(),
-            onRefresh = { vm.refresh(viewport()) },
-            modifier = Modifier.fillMaxSize(),
+        // Focus scrolling must not activate the touch pull gesture or its rotating arrow.
+        Box(
+            modifier = Modifier.fillMaxSize().pullToRefresh(
+                isRefreshing = vm.loading && list.isNotEmpty(),
+                state = pullState,
+                enabled = touchRefresh,
+                onRefresh = { vm.refresh(viewport()) },
+            ),
         ) {
         Box(modifier = Modifier.fillMaxSize()) {
             when {
@@ -265,6 +285,17 @@ fun HomeScreen(
                      * 直接闪退（2026-09-30 实测踩到，番剧分区一进去就崩）。
                      */
                     gridItems(cards, key = { it.cardKey() }) { item ->
+                        val cardKey = item.cardKey()
+                        /*
+                         * 这一张是不是"入口落点"，由每张卡自己派生：
+                         * 命中 lastFocused（且还在当前列表里）就用它，否则退回首卡。
+                         * 焦点移动只会翻转**旧/新两张卡**的这个布尔值，父级不读 lastFocused。
+                         */
+                        val isEntryTarget by remember(tab.id, cardKey, validKeys, firstKey) {
+                            derivedStateOf(structuralEqualityPolicy()) {
+                                cardKey == (lastFocused[tab.id]?.takeIf { it in validKeys } ?: firstKey)
+                            }
+                        }
                         FeedCard(
                             item = item,
                             /*
@@ -276,8 +307,8 @@ fun HomeScreen(
                                 if (item.seasonId > 0L) onOpenSeason(item.seasonId) else onOpen(item.bvid)
                             },
                             modifier = Modifier.fillMaxWidth(),
-                            onFocused = { if (it) lastFocused[tab.id] = item.cardKey() },
-                            focusRequester = firstCard.takeIf { item.cardKey() == defaultKey },
+                            onFocused = { if (it) lastFocused[tab.id] = cardKey },
+                            focusRequester = firstCard.takeIf { isEntryTarget },
                         )
                     }
                     if (vm.loadingMore || vm.error != null) item(span = { GridItemSpan(maxLineSpan) }) {
@@ -297,6 +328,14 @@ fun HomeScreen(
                 Text(stringResource(R.string.action_previous_batch), color = theme.primary, modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp))
             }
         }
+        if (touchRefresh) PullToRefreshDefaults.Indicator(
+            state = pullState,
+            isRefreshing = vm.loading && list.isNotEmpty(),
+            modifier = Modifier.align(Alignment.TopCenter),
+        ) else if (vm.loading && list.isNotEmpty()) CircularProgressIndicator(
+            modifier = Modifier.align(Alignment.TopCenter).padding(top = 8.dp).size(22.dp),
+            strokeWidth = 2.dp,
+        )
         }
     }
 

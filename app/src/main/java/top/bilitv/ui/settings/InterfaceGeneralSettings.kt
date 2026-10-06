@@ -12,6 +12,7 @@ import androidx.compose.ui.text.TextStyle
 import top.bilitv.data.settings.SettingsStore
 import top.bilitv.data.settings.StartupFocus
 import top.bilitv.data.settings.CardSize
+import top.bilitv.data.settings.UiLanguage
 import top.bilitv.ui.NavTab
 import top.bilitv.ui.theme.AppTheme
 import top.bilitv.ui.theme.AppType
@@ -24,27 +25,27 @@ internal fun InterfaceGeneralSettings(settings: SettingsStore, first: FocusReque
     var animations by remember { mutableStateOf(settings.interfaceAnimations) }
     var autoRefresh by remember { mutableStateOf(settings.autoRefresh) }
     var rightToCards by remember { mutableStateOf(settings.rightToCards) }
-    var cardMenu by remember { mutableStateOf(settings.cardMenuOnMenuKey) }
     var lowMemory by remember { mutableStateOf(settings.lowMemoryMode) }
+    var language by remember { mutableStateOf(settings.interfaceLanguage) }
     val pages = NavTab.parse(settings.navTabs).map { it.name } + "FAV"
     var page by remember { mutableStateOf(settings.startupPage.takeIf { it in pages } ?: "HOME") }
     var focus by remember { mutableStateOf(settings.startupFocus) }
     val back = Modifier.backToCategories()
     val context = LocalContext.current
     Text(stringResource(R.string.interface_general), color = AppTheme.current.primary, style = TextStyle(fontSize = AppType.H3))
-    ToggleRow(stringResource(R.string.interface_low_memory), stringResource(R.string.interface_low_memory_hint),
-        lowMemory, { lowMemory = it; settings.lowMemoryMode = it },
+    ChoiceRow(stringResource(R.string.interface_language), stringResource(R.string.interface_language_hint),
+        UiLanguage.entries.toList(), language, { context.getString(it.labelRes) },
+        { language = it; settings.interfaceLanguage = it },
         back.then(if (first != null) Modifier.focusRequester(first) else Modifier)
             .focusProperties { if (headUp != null) up = headUp })
+    ToggleRow(stringResource(R.string.interface_low_memory), stringResource(R.string.interface_low_memory_hint),
+        lowMemory, { lowMemory = it; settings.lowMemoryMode = it }, back)
     ToggleRow(stringResource(R.string.interface_auto_refresh), stringResource(R.string.interface_auto_refresh_hint),
         autoRefresh, { autoRefresh = it; settings.autoRefresh = it }, back)
     ToggleRow(stringResource(R.string.interface_right_to_cards), stringResource(R.string.interface_right_to_cards_hint),
         rightToCards, { rightToCards = it; settings.rightToCards = it }, back)
     ToggleRow(stringResource(R.string.interface_animations), stringResource(R.string.interface_animations_hint), animations,
         { animations = it; settings.interfaceAnimations = it }, back)
-    ChoiceRow(stringResource(R.string.interface_menu_key), stringResource(R.string.interface_menu_key_hint),
-        listOf(true, false), cardMenu, { context.getString(if (it) R.string.interface_menu_card else R.string.interface_menu_refresh) },
-        { cardMenu = it; settings.cardMenuOnMenuKey = it }, back)
     ChoiceRow(stringResource(R.string.interface_startup_page), stringResource(R.string.interface_startup_page_hint),
         pages, page, { id -> context.getString(if (id == "FAV") R.string.nav_favorites else NavTab.entries.first { it.name == id }.labelRes) },
         { page = it; settings.startupPage = it }, back)

@@ -18,6 +18,7 @@ import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.lazy.grid.*
 import androidx.compose.foundation.lazy.itemsIndexed
@@ -60,6 +61,7 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.flow.first
 import top.bilitv.BiliTvApp
 import top.bilitv.data.model.*
 import top.bilitv.ui.components.*
@@ -86,6 +88,10 @@ fun PgcScreen(onOpenSeason: (Long) -> Unit) {
     val retryFocus = remember { FocusRequester() }
     val gridFocus = remember { FocusRequester() }
     val cardFocus = remember { FocusRequester() }
+    val bannerEntry = remember { FocusRequester() }
+    val rankingState = rememberLazyListState()
+    val picksState = rememberLazyListState()
+    var enterBelowBanner by remember(type) { mutableStateOf(false) }
     val returnKey by remember { derivedStateOf {
         gridState.layoutInfo.visibleItemsInfo.firstOrNull { it.key is Long || it.key == "rank" || it.key == "picks" }?.key
     } }
@@ -122,6 +128,32 @@ fun PgcScreen(onOpenSeason: (Long) -> Unit) {
                 val side = !rankingOpen && !resultsOnly && hero.isNotEmpty() &&
                     useSideBanner(availableWidth, availableHeight, sideLayout, fontScale)
                 SideEffect { sideLayout = side }
+                val firstRow = when {
+                    vm.ranking.isNotEmpty() -> "rank"
+                    vm.picks.isNotEmpty() -> "picks"
+                    else -> null
+                }
+                val firstSeason = vm.items.firstOrNull()?.seasonId
+                LaunchedEffect(type, side, enterBelowBanner, firstRow, firstSeason, rankingOpen, resultsOnly) {
+                    if (!enterBelowBanner) return@LaunchedEffect
+                    try {
+                        if (side || rankingOpen || resultsOnly) return@LaunchedEffect
+                        // A lazy row may have scrolled its first card out of composition.
+                        // Mount it before requesting focus; never point a directional rule at it while absent.
+                        val row = when (firstRow) { "rank" -> rankingState; "picks" -> picksState; else -> null }
+                        row?.scrollToItem(0)
+                        val targetKey = firstRow ?: firstSeason
+                        if (gridState.layoutInfo.visibleItemsInfo.none { it.key == targetKey }) {
+                            gridState.scrollToItem(if (firstRow != null) 1 else 2)
+                        }
+                        snapshotFlow {
+                            gridState.layoutInfo.visibleItemsInfo.any { it.key == targetKey } &&
+                                (row == null || row.layoutInfo.visibleItemsInfo.any { it.index == 0 })
+                        }.first { it }
+                        withFrameNanos { }
+                        bannerEntry.requestFocus()
+                    } finally { enterBelowBanner = false }
+                }
                 val grid: @Composable (Modifier) -> Unit = { gridModifier ->
                     LazyVerticalGrid(theme.gridCells(poster = true), state = gridState, modifier = gridModifier.focusRequester(gridFocus).verticalScrollbar(gridState),
                     contentPadding = PaddingValues(horizontal = if (side) 0.dp else theme.screenPadding, vertical = 8.dp),
@@ -129,13 +161,17 @@ fun PgcScreen(onOpenSeason: (Long) -> Unit) {
                     verticalArrangement = Arrangement.spacedBy(theme.rowGap)) {
                     if (!rankingOpen && !resultsOnly) {
                         if (!side && hero.isNotEmpty()) item(key = "hero", span = { GridItemSpan(maxLineSpan) }) {
-                            RotatingCinemaHero(hero, onOpenSeason, heroFocus)
+                            RotatingCinemaHero(hero, onOpenSeason, heroFocus,
+                                posterArtwork = type == PgcType.SHORT_PLAY,
+                                onDown = if (firstRow != null || firstSeason != null) ({ enterBelowBanner = true }) else null)
                         }
                         if (vm.ranking.isNotEmpty()) {
                             item(key = "rank", span = { GridItemSpan(maxLineSpan) }) {
                                 Column {
                                     CinemaHeading(stringResource(R.string.cinema_ranking, typeLabel), "TOP ${vm.ranking.size.coerceAtMost(100)}") { rankingOpen = true }
-                                    PosterRow(vm.ranking.take(12), onOpenSeason, ranked = true, leftFocus = if (side) heroFocus else null, entryFocus = if (side && returnKey == "rank") cardFocus else null)
+                                    PosterRow(vm.ranking.take(12), onOpenSeason, ranked = true, leftFocus = if (side) heroFocus else null,
+                                        entryFocus = if (side && returnKey == "rank") cardFocus else null,
+                                        firstFocus = if (!side) bannerEntry else null, rowState = rankingState)
                                 }
                             }
                         }
@@ -143,7 +179,9 @@ fun PgcScreen(onOpenSeason: (Long) -> Unit) {
                             item(key = "picks", span = { GridItemSpan(maxLineSpan) }) {
                                 Column {
                                     CinemaHeading(stringResource(R.string.cinema_picks), stringResource(R.string.cinema_refresh_picks)) { vm.shufflePicks() }
-                                    PosterRow(vm.picks, onOpenSeason, leftFocus = if (side) heroFocus else null, entryFocus = if (side && returnKey == "picks") cardFocus else null)
+                                    PosterRow(vm.picks, onOpenSeason, leftFocus = if (side) heroFocus else null,
+                                        entryFocus = if (side && returnKey == "picks") cardFocus else null,
+                                        firstFocus = if (!side && firstRow == "picks") bannerEntry else null, rowState = picksState)
                                 }
                             }
                         }
@@ -164,6 +202,7 @@ fun PgcScreen(onOpenSeason: (Long) -> Unit) {
                     itemsIndexed(displayed, key = { _, s -> s.seasonId }) { i, season ->
                         val firstColumn = gridState.layoutInfo.visibleItemsInfo.any { it.key == season.seasonId && it.column == 0 }
                         PosterCard(season, Modifier.fillMaxWidth()
+                            .then(if (!side && !rankingOpen && !resultsOnly && firstRow == null && i == 0) Modifier.focusRequester(bannerEntry) else Modifier)
                             .then(if (side && returnKey == season.seasonId) Modifier.focusRequester(cardFocus) else Modifier).focusProperties {
                             if (side && firstColumn) left = heroFocus
                         }, if (rankingOpen) i + 1 else null) { onOpenSeason(season.seasonId) }
@@ -239,7 +278,8 @@ private fun CinemaFilters(vm: PgcViewModel, onApplied: () -> Unit, onDismiss: ()
 
 @Composable
 private fun RotatingCinemaHero(seasons: List<PgcSeason>, onOpen: (Long) -> Unit, focusRequester: FocusRequester,
-    modifier: Modifier = Modifier, portrait: Boolean = false, rightFocus: FocusRequester? = null) {
+    modifier: Modifier = Modifier, portrait: Boolean = false, rightFocus: FocusRequester? = null,
+    posterArtwork: Boolean = false, onDown: (() -> Unit)? = null) {
     val theme = AppTheme.current
     var index by remember(seasons) { mutableIntStateOf(0) }
     var focused by remember { mutableStateOf(false) }
@@ -262,15 +302,18 @@ private fun RotatingCinemaHero(seasons: List<PgcSeason>, onOpen: (Long) -> Unit,
         .onPreviewKeyEvent {
             val previous = if (portrait) Key.DirectionUp else Key.DirectionLeft
             val next = if (portrait) Key.DirectionDown else Key.DirectionRight
-            if (it.key == previous || it.key == next) {
+            if (!portrait && it.key == Key.DirectionDown && onDown != null) {
+                if (it.type == KeyEventType.KeyDown && it.nativeKeyEvent.repeatCount == 0) onDown()
+                true
+            } else if (it.key == previous || it.key == next) {
                 if (it.type == KeyEventType.KeyDown) index = (index + if (it.key == previous) seasons.size - 1 else 1) % seasons.size
                 true
             } else false
         }.focusRing(contentDescription = stringResource(if (portrait) R.string.cinema_banner_side else R.string.cinema_banner_horizontal, season.title), scaleOnFocus = 1f,
             onClick = { onOpen(season.seasonId) }).padding(3.dp)) {
-        if (theme.animations) Crossfade(season, animationSpec = tween(350), label = "cinemaBanner") { shown -> HeroBackdrop(shown, portrait) }
-        else HeroBackdrop(season, portrait)
-        Column(Modifier.align(if (portrait) Alignment.BottomStart else Alignment.CenterStart).fillMaxWidth(if (portrait) 1f else .70f)
+        if (theme.animations) Crossfade(season, animationSpec = tween(350), label = "cinemaBanner") { shown -> HeroBackdrop(shown, portrait, posterArtwork) }
+        else HeroBackdrop(season, portrait, posterArtwork)
+        Column(Modifier.align(if (portrait) Alignment.BottomStart else Alignment.CenterStart).fillMaxWidth(if (portrait) 1f else if (posterArtwork) .6f else .70f)
             .padding(horizontal = if (portrait) 12.dp else 20.dp, vertical = if (portrait) 28.dp else 20.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text(season.title, color = theme.textPrimary, style = TextStyle(fontSize = if (portrait) 22.sp else 26.sp, fontWeight = FontWeight.Bold),
                 maxLines = if (portrait) 2 else 1, overflow = TextOverflow.Ellipsis)
@@ -287,28 +330,35 @@ private fun RotatingCinemaHero(seasons: List<PgcSeason>, onOpen: (Long) -> Unit,
 }
 
 @Composable
-private fun HeroBackdrop(season: PgcSeason, portrait: Boolean) {
+private fun HeroBackdrop(season: PgcSeason, portrait: Boolean, posterArtwork: Boolean) {
     val theme = AppTheme.current
     val context = LocalContext.current
-    Box(Modifier.fillMaxSize()) {
-        AsyncImage(ImageRequest.Builder(context).data((if (portrait) season.cover.ifBlank { season.backdrop } else season.backdrop.ifBlank { season.cover }).fixedScheme())
-            .size(if (portrait) 400 else 1280, if (portrait) 600 else 360).build(), contentDescription = null, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
+    Box(Modifier.fillMaxSize().background(theme.background)) {
+        val posterPanel = posterArtwork && !portrait
+        AsyncImage(ImageRequest.Builder(context).data((if (portrait || posterPanel) season.cover.ifBlank { season.backdrop } else season.backdrop.ifBlank { season.cover }).fixedScheme())
+            .size(if (portrait || posterPanel) 400 else 1280, if (portrait || posterPanel) 600 else 360).build(), contentDescription = null,
+            contentScale = if (posterPanel) ContentScale.Fit else ContentScale.Crop,
+            modifier = if (posterPanel) Modifier.align(Alignment.CenterEnd).fillMaxHeight().fillMaxWidth(.4f) else Modifier.fillMaxSize())
         val scrim = if (portrait) Brush.verticalGradient(
             0f to Color.Transparent, .5f to theme.background.copy(alpha = .1f), 1f to theme.background.copy(alpha = .95f))
         else Brush.horizontalGradient(
             0f to theme.background.copy(alpha = .85f), .7f to theme.background.copy(alpha = .15f), 1f to Color.Transparent)
-        Box(Modifier.fillMaxSize().background(scrim))
+        if (!posterPanel) Box(Modifier.fillMaxSize().background(scrim))
     }
 }
 
 @Composable
-private fun PosterRow(items: List<PgcSeason>, onOpen: (Long) -> Unit, ranked: Boolean = false, leftFocus: FocusRequester? = null, entryFocus: FocusRequester? = null) {
+private fun PosterRow(items: List<PgcSeason>, onOpen: (Long) -> Unit, ranked: Boolean = false,
+    leftFocus: FocusRequester? = null, entryFocus: FocusRequester? = null, firstFocus: FocusRequester? = null,
+    rowState: LazyListState) {
     val theme = AppTheme.current
     val width = theme.cardMinWidth * .62f
-    val rowState = rememberLazyListState()
     LazyRow(state = rowState, horizontalArrangement = Arrangement.spacedBy(theme.cardGap)) {
         itemsIndexed(items, key = { _, s -> s.seasonId }) { i, season ->
-            PosterCard(season, Modifier.width(width).then(if (i == rowState.firstVisibleItemIndex && entryFocus != null) Modifier.focusRequester(entryFocus) else Modifier).focusProperties { if (i == 0 && leftFocus != null) left = leftFocus }, if (ranked) i + 1 else null) { onOpen(season.seasonId) }
+            PosterCard(season, Modifier.width(width)
+                .then(if (i == 0 && firstFocus != null) Modifier.focusRequester(firstFocus) else Modifier)
+                .then(if (i == rowState.firstVisibleItemIndex && entryFocus != null) Modifier.focusRequester(entryFocus) else Modifier)
+                .focusProperties { if (i == 0 && leftFocus != null) left = leftFocus }, if (ranked) i + 1 else null) { onOpen(season.seasonId) }
         }
     }
 }
@@ -317,21 +367,19 @@ private fun PosterRow(items: List<PgcSeason>, onOpen: (Long) -> Unit, ranked: Bo
 private fun PosterCard(season: PgcSeason, modifier: Modifier = Modifier, rank: Int? = null, onClick: () -> Unit) {
     val theme = AppTheme.current
     val context = LocalContext.current
-    val settings = (context.applicationContext as? BiliTvApp)?.settings
     val cardFocus = remember { FocusRequester() }
-    val openMenu = rememberVideoCardMenu(season.title, onClick, cardFocus)
     val titleHeight = with(LocalDensity.current) { 17.sp.toDp() * 2 + 11.dp }
     val coverLimit = (androidx.compose.ui.platform.LocalConfiguration.current.screenHeightDp.dp - 160.dp - titleHeight)
         .coerceAtLeast(72.dp)
     Column(modifier.focusRequester(cardFocus).onPreviewKeyEvent { e ->
-        if (e.key != Key.Menu || settings?.cardMenuOnMenuKey == false) false
-        else { if (e.type == KeyEventType.KeyUp && !e.nativeKeyEvent.isCanceled) openMenu(); true }
+        if (e.key != Key.Menu) false
+        else { if (e.type == KeyEventType.KeyUp && !e.nativeKeyEvent.isCanceled) top.bilitv.ui.RefreshBus.request(); true }
     }.focusRing(contentDescription = buildString {
         if (rank != null) append(context.getString(R.string.cinema_rank_number, rank))
         append(season.title)
         if (season.hasScore) append(context.getString(R.string.cinema_rating, season.score))
         if (season.accessBadge.isNotBlank()) append("，${season.accessBadge}")
-    }, elevateOnFocus = true, onClick = onClick, onLongClick = openMenu).padding(3.dp)) {
+    }, elevateOnFocus = true, onClick = onClick).padding(3.dp)) {
         Box(Modifier.fillMaxWidth().cappedCover(2f / 3f, coverLimit).clip(RoundedCornerShape(theme.cardCorner - 3.dp))) {
             AsyncImage(ImageRequest.Builder(context).data(season.cover.fixedScheme()).size(300, 450).build(),
                 contentDescription = null, contentScale = ContentScale.Fit, modifier = Modifier.matchParentSize())

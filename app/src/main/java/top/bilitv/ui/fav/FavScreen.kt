@@ -32,10 +32,12 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
+import top.bilitv.R
 import top.bilitv.data.model.FavFolder
 import top.bilitv.ui.components.BackChip
 import top.bilitv.ui.components.FeedCard
@@ -70,6 +72,7 @@ fun FavScreen(onBack: () -> Unit, onOpenVideo: (String, Long, String) -> Unit, o
 
     LaunchedEffect(Unit) { vm.load() }
     DisposableEffect(vm) { onDispose { vm.stopLoading() } }
+    top.bilitv.ui.OnRefreshRequest { vm.reload() }
 
     var focusKick by remember { mutableIntStateOf(0) }
     val firstFocus = remember { FocusRequester() }
@@ -90,7 +93,7 @@ fun FavScreen(onBack: () -> Unit, onOpenVideo: (String, Long, String) -> Unit, o
             horizontalArrangement = Arrangement.spacedBy(14.dp),
         ) {
             Text(
-                text = vm.opened?.title ?: "收藏",
+                text = vm.opened?.title ?: stringResource(R.string.fav_title),
                 style = TextStyle(fontSize = AppType.H1, fontWeight = FontWeight.Bold),
                 color = theme.textPrimary,
             )
@@ -110,9 +113,9 @@ fun FavScreen(onBack: () -> Unit, onOpenVideo: (String, Long, String) -> Unit, o
                     text = run {
                         val total = vm.opened?.count ?: 0
                         when {
-                            total <= 0 -> "${vm.items.size} 条"
-                            vm.items.size >= total -> "$total 条"
-                            else -> "已加载 ${vm.items.size} / 共 $total 条"
+                            total <= 0 -> stringResource(R.string.fav_count, vm.items.size)
+                            vm.items.size >= total -> stringResource(R.string.fav_count, total)
+                            else -> stringResource(R.string.fav_count_loaded, vm.items.size, total)
                         }
                     },
                     style = TextStyle(fontSize = AppType.Meta),
@@ -127,8 +130,8 @@ fun FavScreen(onBack: () -> Unit, onOpenVideo: (String, Long, String) -> Unit, o
                     CircularProgressIndicator(Modifier.align(Alignment.Center))
 
                 FavState.NEED_LOGIN -> FavNotice(
-                    text = "收藏要登录才能看",
-                    actionLabel = "去登录",
+                    text = stringResource(R.string.fav_need_login),
+                    actionLabel = stringResource(R.string.action_sign_in),
                     onAction = onNeedLogin,
                     requester = firstFocus,
                 )
@@ -137,11 +140,11 @@ fun FavScreen(onBack: () -> Unit, onOpenVideo: (String, Long, String) -> Unit, o
                     // 在夹里失败要说"拿不到这个夹的内容"，不能说"拿不到收藏夹" ——
                     // 用户会以为整个收藏功能坏了（而且两种失败的"重试"目标也不一样）
                     text = if (vm.opened != null) {
-                        "拿不到这个收藏夹的内容 —— 可能是网络不通"
+                        stringResource(R.string.fav_error_items)
                     } else {
-                        "拿不到收藏夹 —— 可能是接口变了或网络不通"
+                        stringResource(R.string.fav_error_folders)
                     },
-                    actionLabel = "重新加载",
+                    actionLabel = stringResource(R.string.action_reload),
                     // ★ 走 retry()：在夹里失败就重试这个夹，而不是把用户甩回夹列表
                     onAction = { vm.retry() },
                     requester = firstFocus,
@@ -149,8 +152,8 @@ fun FavScreen(onBack: () -> Unit, onOpenVideo: (String, Long, String) -> Unit, o
 
                 FavState.FOLDERS -> if (vm.folders.isEmpty()) {
                     FavNotice(
-                        text = "还没有收藏夹",
-                        actionLabel = "去首页看看",
+                        text = stringResource(R.string.fav_empty_folders),
+                        actionLabel = stringResource(R.string.action_browse_home),
                         onAction = onBack,
                         requester = firstFocus,
                     )
@@ -160,8 +163,8 @@ fun FavScreen(onBack: () -> Unit, onOpenVideo: (String, Long, String) -> Unit, o
 
                 FavState.ITEMS -> if (vm.items.isEmpty()) {
                     FavNotice(
-                        text = if (vm.loadingMore) "正在加载收藏视频…" else vm.error ?: if (vm.hasMore) "这一页没有可播放的视频，可继续加载" else "没有可播放的收藏视频",
-                        actionLabel = if (vm.loadingMore) "加载中" else if (vm.error != null) "重新加载" else if (vm.hasMore) "加载更多" else "返回收藏夹",
+                        text = if (vm.loadingMore) stringResource(R.string.fav_loading_items) else vm.error ?: if (vm.hasMore) stringResource(R.string.fav_page_empty) else stringResource(R.string.fav_empty_items),
+                        actionLabel = if (vm.loadingMore) stringResource(R.string.action_loading) else if (vm.error != null) stringResource(R.string.action_reload) else if (vm.hasMore) stringResource(R.string.action_load_more) else stringResource(R.string.fav_back_folders),
                         onAction = { if (vm.error != null) vm.retry() else if (vm.hasMore) vm.loadMore() else vm.backToFolders() },
                         requester = firstFocus,
                     )
@@ -197,7 +200,7 @@ private fun FolderList(
                     .fillMaxWidth()
                     .then(if (f == folders.firstOrNull()) Modifier.focusRequester(requester) else Modifier)
                     .focusRing(
-                        contentDescription = "${f.title}，${f.count} 条",
+                        contentDescription = stringResource(R.string.fav_folder_description, f.title, f.count),
                         restFill = theme.surface,
                         elevateOnFocus = true,
                         onClick = { onOpen(f) },
@@ -207,13 +210,13 @@ private fun FolderList(
                 horizontalArrangement = Arrangement.spacedBy(14.dp),
             ) {
                 Text(
-                    text = f.title.ifBlank { "未命名收藏夹" },
+                    text = f.title.ifBlank { stringResource(R.string.fav_unnamed_folder) },
                     style = TextStyle(fontSize = AppType.CardTitle),
                     color = theme.textPrimary,
                     modifier = Modifier.weight(1f),
                 )
                 Text(
-                    text = "${f.count} 条",
+                    text = stringResource(R.string.fav_count, f.count),
                     style = TextStyle(fontSize = AppType.Meta),
                     color = theme.textTertiary,
                 )
@@ -257,8 +260,8 @@ private fun ItemGrid(
             LoadFeedback(vm.loadingMore, vm.error, vm::retry)
         }
         else if (vm.hasMore) item(span = { GridItemSpan(maxLineSpan) }) {
-            Row(Modifier.fillMaxWidth().focusRing(contentDescription = "加载更多收藏", onClick = vm::loadMore).padding(16.dp)) {
-                Text("加载更多", color = theme.textPrimary)
+            Row(Modifier.fillMaxWidth().focusRing(contentDescription = stringResource(R.string.fav_load_more_description), onClick = vm::loadMore).padding(16.dp)) {
+                Text(stringResource(R.string.action_load_more), color = theme.textPrimary)
             }
         }
     }

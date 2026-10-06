@@ -19,6 +19,7 @@ import androidx.compose.material3.Text
 import kotlinx.coroutines.delay
 import androidx.compose.ui.res.stringResource
 import top.bilitv.R
+import top.bilitv.data.settings.uiLocale
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.DisposableEffect
@@ -419,7 +420,7 @@ private fun StatCell(label: String, value: Long?) {
     val theme = AppTheme.current
     Column(horizontalAlignment = Alignment.CenterHorizontally) {
         Text(
-            text = statText(value),
+            text = value?.let { formatCount(it, LocalContext.current.uiLocale) } ?: "--",
             style = TextStyle(fontSize = AppType.H3, fontWeight = FontWeight.SemiBold),
             color = if (value == null) theme.textTertiary else theme.textPrimary,
         )

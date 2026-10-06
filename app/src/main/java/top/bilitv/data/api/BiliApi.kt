@@ -211,7 +211,13 @@ class BiliApi(context: Context) {
             "DedeUserID" to store.dedeUserId,
             "buvid3" to store.buvid,
         ).forEach { (name, value) ->
-            if (value.isNullOrBlank()) return@forEach
+            if (value.isNullOrBlank()) {
+                if (name in CREDENTIAL_COOKIE_NAMES) {
+                    cookieCache.remove(name)
+                    AuthBus.cookies.remove(name)
+                }
+                return@forEach
+            }
             buildCookie(name, value)?.let { c ->
                 cookieCache[name] = c
                 // 两个缓存都要写：cookieCache 是本 client 用的，
@@ -463,7 +469,7 @@ class BiliApi(context: Context) {
         val card = data.getJSONObject("card")
         val relation = if (isLoggedIn()) runCatching {
             requireActionResponse(getRaw("/x/relation", mapOf("fid" to "$mid"))).getJSONObject("data").getInt("attribute")
-        }.getOrNull() else null
+        }.onFailure { if (it is CancellationException) throw it }.getOrNull() else null
         return top.bilitv.data.model.UpProfile(mid, card.optString("name"), card.optString("face"), card.optString("sign"),
             card.optJSONObject("level_info")?.takeIf { it.has("current_level") }?.getInt("current_level"),
             data.takeIf { it.has("follower") }?.getLong("follower"), relation)
@@ -1054,6 +1060,7 @@ class BiliApi(context: Context) {
     suspend fun followingCount(vmid: Long): Long? = try {
         parseFollowingCount(getRaw(PATH_RELATION_STAT, mapOf("vmid" to vmid.toString())))
     } catch (t: Throwable) {
+        if (t is CancellationException) throw t
         AppLog.w(TAG, "关注计数失败：${t.javaClass.simpleName}")
         null
     }
@@ -1215,6 +1222,7 @@ class BiliApi(context: Context) {
         if (d == null) AppLog.w(TAG, "房间 $roomId 信息为空")
         d
     } catch (t: Throwable) {
+        if (t is CancellationException) throw t
         AppLog.e(TAG, "房间 $roomId 信息失败", t)
         null
     }
@@ -1260,6 +1268,7 @@ class BiliApi(context: Context) {
         }
         info
     } catch (t: Throwable) {
+        if (t is CancellationException) throw t
         AppLog.e(TAG, "房间 $roomId 取流失败", t)
         null
     }
@@ -1366,10 +1375,8 @@ class BiliApi(context: Context) {
                     }
                 }
                 val token = d.optJSONObject("token_info") ?: JSONObject()
-                store.sessdata = cookies["SESSDATA"]
-                store.biliJct = cookies["bili_jct"]
-                store.dedeUserId = cookies["DedeUserID"]
-                store.accessKey = token.optString("access_token").takeIf { it.isNotBlank() }
+                store.replaceLogin(cookies, token.optString("access_token"))
+                AuthBus.prefs.refreshToken = null
                 // ★ 必须立刻推进内存缓存 —— 否则这次登录要等**重启 App** 才生效
                 //   （2026-09-29 电视真机实测，见 applyStoredCredentials 的说明）
                 applyStoredCredentials()
@@ -1466,6 +1473,7 @@ class BiliApi(context: Context) {
      */
     fun logout() {
         store.clear()
+        AuthBus.prefs.refreshToken = null
         dropCredentialCookies()
         AppLog.i(TAG, "已退出登录")
     }
@@ -1524,9 +1532,7 @@ class BiliApi(context: Context) {
                         AppLog.w(TAG, "网页端登录成功但没拿到 SESSDATA")
                         return WebLogin.Poll.Failed(-1, "登录成功但凭据不完整")
                     }
-                    store.sessdata = cookies["SESSDATA"]
-                    store.biliJct = cookies["bili_jct"]
-                    store.dedeUserId = cookies["DedeUserID"]
+                    store.replaceLogin(cookies) // Clear any previous account's App credential.
                     // 同 TV 端：立刻推进内存缓存（这条路的 cookie 是 Set-Cookie 收进来的，
                     // 通常已经在缓存里了，但显式再推一次保证两条登录路径行为一致）
                     applyStoredCredentials()

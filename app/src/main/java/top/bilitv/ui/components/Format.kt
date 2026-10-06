@@ -18,7 +18,12 @@ fun String.fixedScheme(): String = when {
 }
 
 /** 播放量/弹幕数：10 万、1.2 亿 */
-fun formatCount(value: Long): String = when {
+fun formatCount(value: Long, locale: Locale = Locale.CHINA): String = if (locale.language == "en") when {
+    value >= 1_000_000_000L -> String.format(Locale.US, "%.1fB", value / 1_000_000_000.0)
+    value >= 1_000_000L -> String.format(Locale.US, "%.1fM", value / 1_000_000.0)
+    value >= 1_000L -> String.format(Locale.US, "%.1fK", value / 1_000.0)
+    else -> value.toString()
+} else when {
     value >= 100_000_000L -> String.format(Locale.CHINA, "%.1f亿", value / 100_000_000.0)
     value >= 10_000L -> String.format(Locale.CHINA, "%.1f万", value / 10_000.0)
     else -> value.toString()
@@ -56,10 +61,18 @@ fun formatDuration(seconds: Int): String {
  *
  * @param pubSec 接口给的 `pubdate`（Unix 秒）。<=0 表示没有，返回空串
  */
-fun formatPubDate(pubSec: Long, nowSec: Long = System.currentTimeMillis() / 1000L): String {
+fun formatPubDate(pubSec: Long, nowSec: Long = System.currentTimeMillis() / 1000L, locale: Locale = Locale.CHINA): String {
     if (pubSec <= 0L) return ""
     val diff = nowSec - pubSec
     if (diff < 0L) return ""                       // 时钟不同步就往回退，别显示「-3小时前」
+    if (locale.language == "en") {
+        if (diff < 60L) return "Just now"
+        if (diff < 3600L) return "${diff / 60} min ago"
+        if (diff < 86_400L) return "${diff / 3600} h ago"
+        if (diff < 172_800L) return "Yesterday"
+        val format = java.text.SimpleDateFormat("MMM d, yyyy", Locale.US)
+        return format.format(java.util.Date(pubSec * 1000L))
+    }
     if (diff < 60L) return "刚刚"
     if (diff < 3600L) return "${diff / 60}分钟前"
     if (diff < 86_400L) return "${diff / 3600}小时前"

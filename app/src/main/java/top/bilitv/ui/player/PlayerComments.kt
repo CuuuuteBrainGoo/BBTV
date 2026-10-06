@@ -1,5 +1,6 @@
 package top.bilitv.ui.player
 
+import android.content.Context
 import androidx.compose.foundation.background
 import androidx.compose.foundation.focusGroup
 import androidx.compose.foundation.layout.*
@@ -14,12 +15,14 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.text.style.TextOverflow
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
+import top.bilitv.R
 import top.bilitv.data.api.BiliApi
 import top.bilitv.data.model.CommentPage
 import top.bilitv.data.model.VideoComment
@@ -29,7 +32,7 @@ import top.bilitv.ui.components.verticalScrollbar
 import top.bilitv.ui.theme.AppTheme
 
 /** Playback owns this state. No network work before open; closing/switching invalidates old requests. */
-class PlayerComments(private val api: BiliApi, private val scope: CoroutineScope) {
+class PlayerComments(private val context: Context, private val api: BiliApi, private val scope: CoroutineScope) {
     var open by mutableStateOf(false); private set
     var newest by mutableStateOf(false); private set
     var roots by mutableStateOf<List<VideoComment>>(emptyList()); private set
@@ -70,7 +73,7 @@ class PlayerComments(private val api: BiliApi, private val scope: CoroutineScope
         job = scope.launch {
             try {
                 val id = oid.takeIf { it > 0 } ?: resolve?.invoke()?.takeIf { it > 0 }
-                    ?: throw java.io.IOException("当前视频没有可用的评论编号，请稍后重试")
+                    ?: throw java.io.IOException(context.getString(R.string.player_comments_no_oid))
                 if (request != generation) return@launch
                 oid = id
                 val response: CommentPage = api.comments(id, requestedNewest, requestedOffset)
@@ -80,7 +83,7 @@ class PlayerComments(private val api: BiliApi, private val scope: CoroutineScope
                 more = response.hasMore && response.nextOffset != requestedOffset
                 offset = response.nextOffset.orEmpty()
             } catch (e: CancellationException) { throw e }
-            catch (e: Exception) { if (request == generation) error = e.message ?: "评论加载失败，请重试" }
+            catch (e: Exception) { if (request == generation) error = e.message ?: context.getString(R.string.player_comments_failed) }
             finally { if (request == generation) loading = false }
         }
     }
@@ -100,13 +103,15 @@ internal fun PlayerCommentSidebar(state: PlayerComments, requestedWidth: Float, 
             .focusProperties { exit = { FocusRequester.Cancel } }.focusGroup()
             .padding(if (compactHeight) 8.dp else 16.dp)) {
             TvCard(onClick = state::close, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp).focusRequester(first), focusedScale = 1f,
-                contentDescription = "关闭评论侧栏，返回播放") { Text("关闭 · 返回播放", color = theme.textPrimary, modifier = Modifier.padding(12.dp)) }
-            Text("评论 · ${state.total}", color = theme.primary,
+                contentDescription = stringResource(R.string.player_comments_close_description)) { Text(stringResource(R.string.player_close_back), color = theme.textPrimary, modifier = Modifier.padding(12.dp)) }
+            Text(stringResource(R.string.player_comments_title, state.total), color = theme.primary,
                 style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.padding(vertical = if (compactHeight) 4.dp else 10.dp))
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                CommentAction(if (!state.newest) "热度 ✓" else "热度", modifier = Modifier.weight(1f)) { state.order(false) }
-                CommentAction(if (state.newest) "最新 ✓" else "最新", modifier = Modifier.weight(1f)) { state.order(true) }
+                val hot = stringResource(R.string.player_comments_hot)
+                val newest = stringResource(R.string.player_comments_new)
+                CommentAction(if (!state.newest) stringResource(R.string.player_comments_selected, hot) else hot, modifier = Modifier.weight(1f)) { state.order(false) }
+                CommentAction(if (state.newest) stringResource(R.string.player_comments_selected, newest) else newest, modifier = Modifier.weight(1f)) { state.order(true) }
             }
             LazyColumn(Modifier.weight(1f).fillMaxWidth().verticalScrollbar(list), state = list,
                 verticalArrangement = Arrangement.spacedBy(8.dp), contentPadding = PaddingValues(vertical = 12.dp)) {
@@ -118,10 +123,10 @@ internal fun PlayerCommentSidebar(state: PlayerComments, requestedWidth: Float, 
                         state.loading -> CircularProgressIndicator(color = theme.primary, modifier = Modifier.size(26.dp))
                         state.error != null -> {
                             Text(state.error.orEmpty(), color = theme.textSecondary)
-                            CommentAction("重试", action = state::retry)
+                            CommentAction(stringResource(R.string.action_retry), action = state::retry)
                         }
-                        state.more -> CommentAction("加载更多", action = state::loadMore)
-                        else -> Text(if (state.total == 0L) "暂无评论" else "已显示当前可读评论", color = theme.textSecondary)
+                        state.more -> CommentAction(stringResource(R.string.action_load_more), action = state::loadMore)
+                        else -> Text(if (state.total == 0L) stringResource(R.string.player_comments_empty) else stringResource(R.string.player_comments_all_shown), color = theme.textSecondary)
                     }
                 }
             }
@@ -143,14 +148,14 @@ private fun CommentCard(comment: VideoComment) {
     val theme = AppTheme.current
     var expanded by remember(comment.id) { mutableStateOf(false) }
     TvCard(onClick = { expanded = !expanded }, focusedScale = 1f,
-        modifier = Modifier.fillMaxWidth(), contentDescription = "${comment.author}，${if (expanded) "收起评论" else "展开评论"}") {
+        modifier = Modifier.fillMaxWidth(), contentDescription = stringResource(R.string.player_comments_card_description, comment.author, stringResource(if (expanded) R.string.player_comments_collapse_description else R.string.player_comments_expand_description))) {
         Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            Text((if (comment.pinned) "置顶 · " else "") + comment.author, color = theme.primary)
+            Text(if (comment.pinned) stringResource(R.string.player_comments_pinned, comment.author) else comment.author, color = theme.primary)
             Text(comment.message, color = theme.textPrimary, maxLines = if (expanded) Int.MAX_VALUE else 6,
                 overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
-            Text(listOf(comment.time, "${comment.likes}赞", "${comment.replyCount}回复").filter { it.isNotBlank() }.joinToString(" · "),
+            Text(listOf(comment.time, stringResource(R.string.player_comments_likes, comment.likes), stringResource(R.string.player_comments_replies, comment.replyCount)).filter { it.isNotBlank() }.joinToString(" · "),
                 color = theme.textSecondary, style = MaterialTheme.typography.bodySmall)
-            Text(if (expanded) "点击收起" else "点击展开", color = theme.textSecondary, style = MaterialTheme.typography.bodySmall)
+            Text(if (expanded) stringResource(R.string.player_comments_collapse) else stringResource(R.string.player_comments_expand), color = theme.textSecondary, style = MaterialTheme.typography.bodySmall)
         }
     }
 }

@@ -10,6 +10,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import top.bilitv.BiliTvApp
+import top.bilitv.R
 import top.bilitv.data.model.FeedItem
 import top.bilitv.data.model.UpProfile
 import top.bilitv.util.AppLog
@@ -53,7 +54,7 @@ class UpSpaceViewModel(app: Application) : AndroidViewModel(app) {
                 if (g == generation && mid == loadedMid) profile = result
             } catch (e: CancellationException) { throw e }
             catch (e: Exception) {
-                if (g == generation) notice = "UP资料暂时加载失败，可重试"
+                if (g == generation) notice = graph.getString(R.string.up_profile_failed)
                 AppLog.w("UpSpace", e.javaClass.simpleName)
             }
         }
@@ -62,9 +63,9 @@ class UpSpaceViewModel(app: Application) : AndroidViewModel(app) {
     fun changeRelation(action: Int) {
         val p = profile ?: return
         if (relationBusy || p.relation == null) return
-        if (p.blocked && action == 1) { notice = "先解除拉黑后再关注"; return }
+        if (p.blocked && action == 1) { notice = graph.getString(R.string.up_unblock_first); return }
         val g = generation
-        relationBusy = true; notice = "正在更新…"
+        relationBusy = true; notice = graph.getString(R.string.up_updating)
         viewModelScope.launch {
             try {
                 // Disposal cancels reads only. Never retry a social write automatically.
@@ -72,10 +73,10 @@ class UpSpaceViewModel(app: Application) : AndroidViewModel(app) {
                 if (g != generation || p.mid != loadedMid) return@launch
                 profile = null
                 refreshProfile()
-                notice = "操作已提交，正在读取最新关系状态"
+                notice = graph.getString(R.string.up_relation_submitted)
             } catch (e: CancellationException) { throw e }
             catch (e: Exception) {
-                if (g == generation) { notice = "关系更新未确认，请刷新资料后检查"; refreshProfile() }
+                if (g == generation) { notice = graph.getString(R.string.up_relation_unconfirmed); refreshProfile() }
             } finally { relationBusy = false }
         }
     }
@@ -127,7 +128,7 @@ class UpSpaceViewModel(app: Application) : AndroidViewModel(app) {
             catch (e: Exception) {
                 if (g == generation) {
                     failedMore = !first
-                    loadError = if (items.isEmpty()) "投稿加载失败，请重试" else "投稿加载失败，已有内容仍保留，请重试"
+                    loadError = if (items.isEmpty()) graph.getString(R.string.up_load_failed) else graph.getString(R.string.up_load_failed_keep)
                     if (first) state = UpState.ERROR
                     AppLog.w("UpSpace", "读取投稿失败：${e.javaClass.simpleName}")
                 }

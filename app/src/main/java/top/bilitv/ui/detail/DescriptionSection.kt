@@ -12,8 +12,10 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import top.bilitv.R
 import top.bilitv.ui.components.focusRing
 import top.bilitv.ui.theme.AppTheme
 
@@ -71,13 +73,13 @@ fun DescriptionSection(desc: String, modifier: Modifier = Modifier) {
         // 不超过 4 行就**不渲染**按钮（不显示一个点了没反应的按钮，§3.4 第 7 条）。
         if (overflows) {
             Text(
-                text = if (expanded) "收起" else "展开",
+                text = stringResource(if (expanded) R.string.description_collapse else R.string.description_expand),
                 style = MaterialTheme.typography.bodySmall,
                 color = theme.textPrimary,
                 modifier = Modifier
                     .padding(top = TOGGLE_GAP)
                     .focusRing(
-                        contentDescription = if (expanded) "收起简介" else "展开简介",
+                        contentDescription = stringResource(if (expanded) R.string.description_collapse_description else R.string.description_expand_description),
                         shape = RoundedCornerShape(TOGGLE_CORNER),
                         restFill = theme.surfaceHigh,
                         focusedFill = theme.focusFill,

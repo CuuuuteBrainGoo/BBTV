@@ -62,6 +62,7 @@ import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.TextStyle
@@ -93,6 +94,8 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import top.bilitv.BiliTvApp
+import top.bilitv.R
+import top.bilitv.data.settings.uiLocale
 import top.bilitv.data.auth.WebCookieMaintainer
 import top.bilitv.data.danmaku.DanmakuItem
 import top.bilitv.data.danmaku.danmakuSegmentCount
@@ -279,6 +282,12 @@ fun PlayerScreen(
     val playerWindowFocused = androidx.compose.ui.platform.LocalWindowInfo.current.isWindowFocused
     LaunchedEffect(playerWindowFocused) { if (!playerWindowFocused) cancelRemote() }
     val backConfirm = rememberBackConfirm()
+    // 这些提示会从非组合的按键回调里发出去，先在组合作用域取好当前语言文本。
+    val backConfirmText = stringResource(R.string.player_back_confirm)
+    val noticeLiveNoSubtitle = stringResource(R.string.player_live_no_subtitle)
+    val noticeLiveNoSpeed = stringResource(R.string.player_live_no_speed)
+    val noticeNoUpSpace = stringResource(R.string.player_no_up_space)
+    val noticeCannotBoost = stringResource(R.string.player_cannot_boost)
     BackHandler(enabled = true) {
         cancelRemote()
         when {
@@ -297,7 +306,7 @@ fun PlayerScreen(
                 backConfirm.clear()
                 onBack(vm.currentBvid, vm.currentSeasonId)
             }
-            else -> backConfirm.arm("再按一下返回退出当前视频")
+            else -> backConfirm.arm(backConfirmText)
         }
     }
 
@@ -439,8 +448,8 @@ fun PlayerScreen(
             RemoteAction.RECOMMEND -> vm.openSidebar(PlaybackTuning.SideAction.RECOMMEND)
             RemoteAction.UP_LIST -> vm.openSidebar(PlaybackTuning.SideAction.UP_UPLOADS)
             RemoteAction.DANMAKU -> vm.setDanmakuOn(!vm.dmOn)
-            RemoteAction.SUBTITLE -> if (!vm.live) vm.changeSubtitlesEnabled(!vm.subtitlesEnabled) else vm.showNotice("直播不提供点播字幕")
-            RemoteAction.SPEED -> if (!vm.live) vm.cycleSpeed() else vm.showNotice("直播不支持此倍速操作")
+            RemoteAction.SUBTITLE -> if (!vm.live) vm.changeSubtitlesEnabled(!vm.subtitlesEnabled) else vm.showNotice(noticeLiveNoSubtitle)
+            RemoteAction.SPEED -> if (!vm.live) vm.cycleSpeed() else vm.showNotice(noticeLiveNoSpeed)
             RemoteAction.QUALITY -> vm.openQuality()
             RemoteAction.NEXT -> vm.playAdjacent(1)
             RemoteAction.PREVIOUS -> vm.playAdjacent(-1)
@@ -450,8 +459,8 @@ fun PlayerScreen(
             RemoteAction.COIN -> vm.coin()
             RemoteAction.FAVORITE -> vm.openFavorites()
             RemoteAction.TRIPLE -> vm.triple()
-            RemoteAction.OPEN_UP -> if (vm.ownerMid > 0L && onOpenUp != null) onOpenUp(vm.ownerMid, vm.ownerName, "") else vm.showNotice("当前内容没有可打开的UP主空间")
-            RemoteAction.BOOST -> if (!vm.beginTouchBoost()) vm.showNotice("当前状态不能临时加速")
+            RemoteAction.OPEN_UP -> if (vm.ownerMid > 0L && onOpenUp != null) onOpenUp(vm.ownerMid, vm.ownerName, "") else vm.showNotice(noticeNoUpSpace)
+            RemoteAction.BOOST -> if (!vm.beginTouchBoost()) vm.showNotice(noticeCannotBoost)
         }
     }
     val latestRemoteAction by androidx.compose.runtime.rememberUpdatedState(performRemote)
@@ -647,11 +656,11 @@ fun PlayerScreen(
             Column(Modifier.align(Alignment.Center).zIndex(2f).background(Color(0xB3000000), RoundedCornerShape(16.dp)).padding(24.dp),
                 horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(14.dp)) {
                 CircularProgressIndicator(Modifier.size(48.dp), color = AppTheme.current.primary)
-                Text("加载中", color = Color.White, fontSize = 22.sp)
+                Text(stringResource(R.string.action_loading), color = Color.White, fontSize = 22.sp)
             }
         } else if (vm.error == null && !vm.playWhenReady && !controlsVisible && !panelOpen && vm.danmakuSettings.showPauseIcon && !vm.touchLocked) {
             Box(Modifier.align(Alignment.Center).zIndex(2f).size(112.dp).background(Color(0x66000000), CircleShape), contentAlignment = Alignment.Center) {
-                Icon(RailIcons.Pause, "已暂停", tint = Color.White.copy(alpha = .85f), modifier = Modifier.size(68.dp))
+                Icon(RailIcons.Pause, stringResource(R.string.player_paused), tint = Color.White.copy(alpha = .85f), modifier = Modifier.size(68.dp))
             }
         }
         seekTarget?.let { target ->
@@ -734,10 +743,10 @@ fun PlayerScreen(
             verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
             // 广告跳过提示
-            vm.skipHint?.let { hint -> Toast("$hint · 按【返回】取消") }
+            vm.skipHint?.let { hint -> Toast(stringResource(R.string.player_skip_cancel, hint)) }
 
             if (vm.muted && vm.error == null) {
-                Toast("音频流全部失效，正在静音播放", alpha = 0.8f)
+                Toast(stringResource(R.string.player_audio_muted), alpha = 0.8f)
             }
 
             // 临时提示：换编码重播这类"自动救回来了"的动作要让用户看得见，
@@ -791,12 +800,13 @@ fun PlayerScreen(
              * 光有一个没标签的全屏可聚焦区，读屏只会念一句"未加标签"，
              * 排查时也看不出这是什么东西（`docs/11` §6.2）。
              */
+            val wakeupDescription = if (!vm.playWhenReady) stringResource(R.string.player_paused_description) else stringResource(R.string.player_playing_description)
             Box(
                 modifier = Modifier
                     .fillMaxSize()
                     .focusRequester(wakeupFocus)
                     .focusable()
-                    .semantics { contentDescription = if (!vm.playWhenReady) "已暂停，OK 恢复，菜单键显示控制条" else "播放中，OK 暂停，菜单键显示控制条" },
+                    .semantics { contentDescription = wakeupDescription },
             )
         }
         if (!controlsVisible && !vm.live && !vm.touchLocked && seekTarget == null && vm.danmakuSettings.showProgressTime) {
@@ -807,12 +817,12 @@ fun PlayerScreen(
             lastInputAt = SystemClock.elapsedRealtime(); controlsVisible = true
         }
         if (vm.previewActive && !vm.previewEnded && vm.error == null) {
-            Text("试看", color = AppTheme.current.primary, fontSize = 13.sp,
+            Text(stringResource(R.string.player_preview_badge), color = AppTheme.current.primary, fontSize = 13.sp,
                 modifier = Modifier.align(Alignment.TopEnd).padding(16.dp)
                     .background(Color.Black.copy(alpha = .55f), RoundedCornerShape(4.dp)).padding(horizontal = 8.dp, vertical = 4.dp))
         }
         if (vm.touchLocked) {
-            PlayerIconButton("触屏已锁定；长按解锁", RailIcons.Lock,
+            PlayerIconButton(stringResource(R.string.player_touch_locked_hint), RailIcons.Lock,
                 Modifier.align(Alignment.CenterStart).padding(start = 20.dp).zIndex(4f),
                 onLongClick = { vm.touchLocked = false; controlsVisible = true }) { vm.lockTouch() }
         }
@@ -843,6 +853,7 @@ private const val HIDE_POLL_MS = 500L
  */
 @Composable
 private fun TopInfoBar(vm: PlayerViewModel, modifier: Modifier = Modifier) {
+    val context = LocalContext.current
     /*
      * 直播和点播的"第二行"信息不是同一回事：
      * 点播是「UP主 · 12万播放 · 340弹幕」，直播是「主播 · 5.1万人气」。
@@ -852,14 +863,14 @@ private fun TopInfoBar(vm: PlayerViewModel, modifier: Modifier = Modifier) {
     val meta = if (vm.live) {
         buildList {
             vm.ownerName.takeIf { it.isNotBlank() }?.let { add(it) }
-            if (vm.viewCount > 0) add("${formatCount(vm.viewCount)}人气")
+            if (vm.viewCount > 0) add(stringResource(R.string.live_popularity, formatCount(vm.viewCount, context.uiLocale)))
             vm.areaName.takeIf { it.isNotBlank() }?.let { add(it) }
         }.joinToString(" · ")
     } else {
         buildList {
             vm.ownerName.takeIf { it.isNotBlank() }?.let { add(it) }
-            if (vm.viewCount > 0) add("${formatCount(vm.viewCount)}播放")
-            if (vm.danmakuCount > 0) add("${formatCount(vm.danmakuCount)}弹幕")
+            if (vm.viewCount > 0) add(stringResource(R.string.detail_views, formatCount(vm.viewCount, context.uiLocale)))
+            if (vm.danmakuCount > 0) add(stringResource(R.string.detail_danmaku_count, formatCount(vm.danmakuCount, context.uiLocale)))
         }.joinToString(" · ")
     }
 
@@ -874,7 +885,7 @@ private fun TopInfoBar(vm: PlayerViewModel, modifier: Modifier = Modifier) {
             .padding(start = 36.dp, end = 36.dp, top = 22.dp, bottom = 34.dp),
     ) {
         Text(
-            text = vm.title.ifBlank { "正在加载…" },
+            text = vm.title.ifBlank { stringResource(R.string.loading) },
             color = Color.White,
             style = MaterialTheme.typography.titleLarge,
             maxLines = 2,
@@ -959,24 +970,24 @@ private fun ControlBar(vm: PlayerViewModel, firstFocus: FocusRequester, onOpenUp
                         else -> false
                     }
                     val label = when (button) {
-                        PlayerBarButton.PLAY -> if (vm.error != null) "重试播放" else if (vm.playWhenReady) "暂停" else "播放"
-                        PlayerBarButton.SPEED -> "倍速 ${vm.speedLabel}"
-                        PlayerBarButton.QUALITY -> "画质 ${vm.qualityLabel}"
-                        PlayerBarButton.DANMAKU -> "弹幕，" + (if (vm.dmOn) "开" else "关") + "；长按设置"
-                        PlayerBarButton.SUBTITLE -> "字幕，" + if (vm.subtitlesEnabled) "开" else "关"
-                        PlayerBarButton.LIKE -> "点赞，" + if (active) "已赞；长按 1.5 秒三连" else "长按 1.5 秒三连"
-                        PlayerBarButton.COIN -> vm.relation?.let { "投币，已投 ${it.coins} 枚，默认两枚" } ?: "投币，默认两枚，状态尚未读取"
-                        PlayerBarButton.FAVORITE -> "收藏" + if (active) "，已收藏" else "，选择收藏夹"
-                        PlayerBarButton.UP -> "UP 主，${vm.ownerName}"
-                        PlayerBarButton.LINE -> "直播线路"
-                        PlayerBarButton.SETTINGS -> "播放设置"
-                        PlayerBarButton.COMMENTS -> "视频评论"
-                        PlayerBarButton.CATALOGUE -> "分P与播放列表"
-                        PlayerBarButton.RECOMMEND -> "相关推荐"
-                        PlayerBarButton.PREVIOUS -> "播放上一个视频"
-                        PlayerBarButton.NEXT -> "播放下一个视频"
-                        PlayerBarButton.REFRESH -> "重新获取播放地址，保留进度"
-                        PlayerBarButton.LOOP -> "循环当前视频，" + if (vm.loopEnabled) "开" else "关"
+                        PlayerBarButton.PLAY -> if (vm.error != null) stringResource(R.string.player_retry_play) else if (vm.playWhenReady) stringResource(R.string.player_pause) else stringResource(R.string.action_play)
+                        PlayerBarButton.SPEED -> stringResource(R.string.player_speed_label, vm.speedLabel)
+                        PlayerBarButton.QUALITY -> stringResource(R.string.player_quality_label, vm.qualityLabel)
+                        PlayerBarButton.DANMAKU -> stringResource(R.string.player_danmaku_state, stringResource(if (vm.dmOn) R.string.value_on else R.string.value_off))
+                        PlayerBarButton.SUBTITLE -> stringResource(R.string.player_subtitle_state, stringResource(if (vm.subtitlesEnabled) R.string.value_on else R.string.value_off))
+                        PlayerBarButton.LIKE -> stringResource(R.string.player_like_state, if (active) stringResource(R.string.player_like_liked) else stringResource(R.string.player_like_hint))
+                        PlayerBarButton.COIN -> vm.relation?.let { stringResource(R.string.player_coin_state, it.coins) } ?: stringResource(R.string.player_coin_unknown)
+                        PlayerBarButton.FAVORITE -> if (active) stringResource(R.string.player_favorite_saved) else stringResource(R.string.player_favorite_choose)
+                        PlayerBarButton.UP -> stringResource(R.string.player_up_label, vm.ownerName)
+                        PlayerBarButton.LINE -> stringResource(R.string.player_live_source)
+                        PlayerBarButton.SETTINGS -> stringResource(R.string.setting_playback)
+                        PlayerBarButton.COMMENTS -> stringResource(R.string.player_video_comments)
+                        PlayerBarButton.CATALOGUE -> stringResource(R.string.remote_catalogue)
+                        PlayerBarButton.RECOMMEND -> stringResource(R.string.remote_recommend)
+                        PlayerBarButton.PREVIOUS -> stringResource(R.string.player_previous_video)
+                        PlayerBarButton.NEXT -> stringResource(R.string.player_next_video)
+                        PlayerBarButton.REFRESH -> stringResource(R.string.player_refresh_hint)
+                        PlayerBarButton.LOOP -> stringResource(R.string.player_loop_state, stringResource(if (vm.loopEnabled) R.string.value_on else R.string.value_off))
                     }
                     PlayerIconButton(label, icon, Modifier.then(if (index == 0) Modifier.focusRequester(firstFocus) else Modifier),
                         active = active,
@@ -1009,7 +1020,7 @@ private fun ControlBar(vm: PlayerViewModel, firstFocus: FocusRequester, onOpenUp
                 }
             }
             Column(horizontalAlignment = Alignment.End) {
-                Text(if (vm.live) { if (vm.living) "直播中" else "非直播状态" }
+                Text(if (vm.live) { if (vm.living) stringResource(R.string.player_live_badge) else stringResource(R.string.player_not_live) }
                     else "${formatDuration((vm.positionMs / 1000).toInt())} / ${formatDuration((vm.durationMs / 1000).toInt())}",
                     color = Color.White, style = MaterialTheme.typography.bodyMedium)
                 if (vm.codecLabel.isNotBlank()) Text(vm.codecLabel, color = Color.White.copy(alpha = .6f), style = MaterialTheme.typography.bodySmall)
@@ -1188,6 +1199,7 @@ internal fun LogPanel(
 ) {
     var text by remember { mutableStateOf(AppLog.snapshot()) }
     var toast by remember { mutableStateOf<String?>(null) }
+    val context = LocalContext.current
 
     /*
      * 字号档位。
@@ -1202,7 +1214,7 @@ internal fun LogPanel(
      */
     var sizeIdx by remember { mutableStateOf(1) }
     val sizes = remember { listOf(12, 18, 28) }
-    val sizeNames = remember { listOf("小", "中", "大") }
+    val sizeNames = listOf(stringResource(R.string.value_small), stringResource(R.string.value_medium), stringResource(R.string.value_large))
     val scroll = rememberScrollState()
 
     // 新日志进来时自动滚到底 —— 最关心的永远是「最后几条」
@@ -1218,7 +1230,7 @@ internal fun LogPanel(
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(
-                text = "运行日志",
+                text = stringResource(R.string.settings_logs),
                 color = Color.White,
                 style = MaterialTheme.typography.titleMedium,
             )
@@ -1231,7 +1243,7 @@ internal fun LogPanel(
              * 改成让路径自己吃掉剩余空间并且超长省略，按钮就能保持单行。
              */
             Text(
-                text = AppLog.exportPath() ?: "日志文件尚未就绪",
+                text = AppLog.exportPath() ?: stringResource(R.string.player_log_file_pending),
                 color = Color.White.copy(alpha = 0.45f),
                 style = MaterialTheme.typography.bodySmall,
                 maxLines = 1,
@@ -1241,23 +1253,23 @@ internal fun LogPanel(
 
             Spacer(Modifier.width(16.dp))
 
-            BarButton("刷新", Modifier.focusRequester(firstFocus)) {
+            BarButton(stringResource(R.string.player_log_refresh), Modifier.focusRequester(firstFocus)) {
                 text = AppLog.snapshot()
                 toast = null
             }
             Spacer(Modifier.width(10.dp))
-            BarButton("字号 ${sizeNames[sizeIdx]}") {
+            BarButton(stringResource(R.string.player_log_font_size, sizeNames[sizeIdx])) {
                 sizeIdx = (sizeIdx + 1) % sizes.size
-                toast = "字号已切到「${sizeNames[sizeIdx]}」，现在拍照能看清了"
+                toast = context.getString(R.string.player_log_font_toast, sizeNames[sizeIdx])
             }
             Spacer(Modifier.width(10.dp))
-            BarButton("清空") {
+            BarButton(stringResource(R.string.player_log_clear)) {
                 AppLog.clear()
                 text = AppLog.snapshot()
-                toast = "已清空"
+                toast = context.getString(R.string.player_log_cleared)
             }
             Spacer(Modifier.width(10.dp))
-            BarButton("关闭") { onClose() }
+            BarButton(stringResource(R.string.action_close)) { onClose() }
         }
 
         toast?.let {
@@ -1268,7 +1280,7 @@ internal fun LogPanel(
         Spacer(Modifier.height(12.dp))
 
         Text(
-            text = text.ifBlank { "（还没有日志。播一个视频再回来看。）" },
+            text = text.ifBlank { stringResource(R.string.player_log_empty) },
             color = Color(0xFFCFD8E3),
             style = MaterialTheme.typography.bodySmall.copy(
                 fontFamily = FontFamily.Monospace,
@@ -1398,7 +1410,7 @@ private fun codecFamily(codecs: String): String = when {
 class PlayerViewModel(app: Application) : AndroidViewModel(app) {
 
     private val graph = app as BiliTvApp
-    val comments = PlayerComments(graph.api, viewModelScope)
+    val comments = PlayerComments(app, graph.api, viewModelScope)
     val player = BiliPlayer(app)
 
     var subtitleTracks by mutableStateOf<List<top.bilitv.data.model.SubtitleTrack>>(emptyList())
@@ -1420,8 +1432,8 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
     fun changeEndAction(action: PlaybackTuning.EndAction) {
         graph.settings.playbackEndAction = action
         applyEndAction()
-        showNotice(if (previewActive && action == PlaybackTuning.EndAction.LOOP) "已保存循环设置；试看片段仍会到期停止"
-            else "播放完成后：${action.label}")
+        showNotice(if (previewActive && action == PlaybackTuning.EndAction.LOOP) graph.getString(R.string.player_end_action_saved_preview)
+            else graph.getString(R.string.player_end_action, graph.getString(action.labelRes())))
     }
     fun toggleLoop() = changeEndAction(if (endAction == PlaybackTuning.EndAction.LOOP) lastNonLoopAction else PlaybackTuning.EndAction.LOOP)
     var subtitleStyle by mutableStateOf(graph.settings.subtitleStyle)
@@ -1440,12 +1452,12 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
     private var subtitleTimeline: top.bilitv.data.model.SubtitleTimeline? = null
     private var subtitleTrack by mutableStateOf<top.bilitv.data.model.SubtitleTrack?>(null)
     val subtitleStatus: String get() = when {
-        subtitleMetadataLoading -> "正在读取当前视频的字幕语言"
-        subtitleLoading -> "正在加载 ${subtitleTrack?.label.orEmpty()}"
+        subtitleMetadataLoading -> graph.getString(R.string.player_subtitle_reading)
+        subtitleLoading -> graph.getString(R.string.player_subtitle_loading, subtitleTrack?.label.orEmpty())
         subtitleError != null -> subtitleError!!
-        !subtitleMetadataLoaded -> "播放后读取当前视频的字幕语言"
-        subtitleTracks.isEmpty() -> "当前视频没有外挂字幕"
-        else -> "${subtitleTracks.size} 种语言" + (subtitleTrack?.let { " · ${it.label}" } ?: "")
+        !subtitleMetadataLoaded -> graph.getString(R.string.player_subtitle_after_play)
+        subtitleTracks.isEmpty() -> graph.getString(R.string.player_subtitle_none)
+        else -> graph.getString(R.string.player_subtitle_languages, subtitleTracks.size) + (subtitleTrack?.let { " · ${it.label}" } ?: "")
     }
 
     private fun resetSubtitles() {
@@ -1477,7 +1489,7 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
             } catch (e: CancellationException) { throw e }
             catch (e: Exception) {
                 if (myToken == token && generation == subtitleGeneration) {
-                    subtitleError = e.message ?: "字幕信息加载失败，请重试"
+                    subtitleError = e.message ?: graph.getString(R.string.player_subtitle_meta_failed)
                     AppLog.w("Subtitle", "字幕信息失败 cid=$targetCid：${e.javaClass.simpleName}")
                 }
             } finally { if (myToken == token && generation == subtitleGeneration) subtitleMetadataLoading = false }
@@ -1509,7 +1521,7 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
             } catch (e: CancellationException) { throw e }
             catch (e: Exception) {
                 if (myToken == token && generation == subtitleLoadGeneration) {
-                    subtitleError = e.message ?: "字幕正文加载失败，请重试"
+                    subtitleError = e.message ?: graph.getString(R.string.player_subtitle_load_failed)
                     AppLog.w("Subtitle", "字幕正文失败：${e.javaClass.simpleName}")
                 }
             } finally { if (myToken == token && generation == subtitleLoadGeneration) subtitleLoading = false }
@@ -1549,7 +1561,7 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun openComments() {
-        if (live) { showNotice("直播没有视频评论侧栏"); return }
+        if (live) { showNotice(graph.getString(R.string.player_live_no_comments)); return }
         closeSidebar()
         val requestedEp = epId; val requestedSeason = seasonId; val requestedToken = token
         comments.show {
@@ -1580,7 +1592,7 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
         sideHasMore = false
         sidePage = 0
         sideError = null
-        sideTitle = action.label
+        sideTitle = graph.getString(action.labelRes())
         sideSource = when {
             action == PlaybackTuning.SideAction.RECOMMEND -> "recommend"
             action == PlaybackTuning.SideAction.UP_UPLOADS -> "up"
@@ -1611,35 +1623,35 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
                     "recommend" -> {
                         val feed = if (epId > 0) {
                             val d = cataloguePgc ?: graph.api.pgcDetail(seasonId, epId)
-                                ?: error("拿不到当前作品信息")
+                                ?: error(graph.getString(R.string.player_side_no_work))
                             graph.api.relatedSeasons(d.seasonId)
                         } else graph.api.relatedVideos(bvid)
-                        items = (feed ?: error("推荐暂时加载失败")).map { it.sideTarget() }
-                        label = "推荐"
+                        items = (feed ?: error(graph.getString(R.string.player_side_recommend_failed))).map { it.sideTarget() }
+                        label = graph.getString(R.string.section_recommend)
                     }
                     "pgc" -> {
-                        val d = cataloguePgc ?: graph.api.pgcDetail(seasonId, epId) ?: error("分集暂时加载失败")
+                        val d = cataloguePgc ?: graph.api.pgcDetail(seasonId, epId) ?: error(graph.getString(R.string.player_side_episodes_failed))
                         items = d.episodes.filter { it.cid > 0 }.map { NextTarget("", d.playbackTitle(it), it.cid, it.epId, it.cover, d.seasonId) }
-                        label = "分集 · ${d.title}"
+                        label = graph.getString(R.string.player_side_episodes_label, d.title)
                     }
                     "collection" -> {
-                        val d = catalogueDetail ?: error("合集暂时加载失败")
+                        val d = catalogueDetail ?: error(graph.getString(R.string.player_side_collection_failed))
                         items = d.collection.map { NextTarget(it.bvid, it.title, it.cid, 0, it.cover) }
-                        label = "合集 · ${d.collectionTitle}"
+                        label = graph.getString(R.string.player_side_collection_label, d.collectionTitle)
                     }
                     "playlist" -> {
-                        val result = graph.api.favResourcePage(playlistId, page) ?: error("播放列表暂时加载失败")
+                        val result = graph.api.favResourcePage(playlistId, page) ?: error(graph.getString(R.string.player_side_playlist_failed))
                         playlistPage = result
                         items = result.items.map { it.sideTarget() }
                         more = result.hasMore
-                        label = "播放列表 · $playlistTitle"
+                        label = graph.getString(R.string.player_side_playlist_label, playlistTitle)
                     }
                     else -> {
-                        if (ownerMid <= 0) error("这段内容没有可用的UP主投稿列表")
-                        val d = graph.api.upVideos(ownerMid, page) ?: error("UP主投稿暂时加载失败，请检查登录或稍后重试")
+                        if (ownerMid <= 0) error(graph.getString(R.string.player_side_no_up_list))
+                        val d = graph.api.upVideos(ownerMid, page) ?: error(graph.getString(R.string.player_side_up_failed))
                         items = d.items.map { it.sideTarget() }
                         more = d.hasMore
-                        label = "UP主投稿 · $ownerName"
+                        label = graph.getString(R.string.player_side_up_label, ownerName)
                     }
                 }
                 if (myToken != token || generation != sideGeneration || !sideOpen) return@launch
@@ -1654,7 +1666,7 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Throwable) {
-                if (myToken == token && generation == sideGeneration && sideOpen) sideError = e.message?.take(120) ?: "列表暂时加载失败"
+                if (myToken == token && generation == sideGeneration && sideOpen) sideError = e.message?.take(120) ?: graph.getString(R.string.player_side_load_failed)
             } finally {
                 if (generation == sideGeneration) sideLoading = false
             }
@@ -1673,8 +1685,8 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             try {
                 val target = if (item.seasonId > 0 && item.epId == 0L) {
-                    val d = graph.api.pgcDetail(item.seasonId) ?: error("暂时拿不到推荐作品的分集")
-                    val e = d.episodes.firstOrNull { it.cid > 0 } ?: error("推荐作品暂无可播放分集")
+                    val d = graph.api.pgcDetail(item.seasonId) ?: error(graph.getString(R.string.player_next_no_episodes))
+                    val e = d.episodes.firstOrNull { it.cid > 0 } ?: error(graph.getString(R.string.player_next_no_playable))
                     NextTarget("", d.playbackTitle(e), e.cid, e.epId, e.cover, d.seasonId)
                 } else item
                 if (myToken != token || generation != sideGeneration) return@launch
@@ -1682,7 +1694,7 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
                 if (!fromPlaylist) { playlistId = 0L; playlistTitle = "" }
                 load(target.bvid, target.cid, target.epId, target.title, target.cover, target.seasonId, keepSpeed = true)
             } catch (e: CancellationException) { throw e }
-            catch (e: Throwable) { if (myToken == token) showNotice(e.message ?: "暂时无法打开这条视频") }
+            catch (e: Throwable) { if (myToken == token) showNotice(e.message ?: graph.getString(R.string.player_open_video_failed)) }
         }
     }
 
@@ -1746,7 +1758,7 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
         private set
     var touchLocked by mutableStateOf(false)
     private var autoQualityFrom: Int? = null
-    fun lockTouch() { touchLocked = true; showNotice("触屏已锁定，长按锁图标或按返回键解锁") }
+    fun lockTouch() { touchLocked = true; showNotice(graph.getString(R.string.player_touch_locked_notice)) }
 
     /** 当前在播的编码 + 清晰度，如 `HEVC 480P`。既给用户看，也是截图排查的线索 */
     var codecLabel by mutableStateOf("")
@@ -1839,7 +1851,7 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
         danmaku = filtered
         AppLog.i("Danmaku", "筛选等级=${options.level} 原始=${raw.size} 保留=${filtered.size} 云=${options.cloud}")
         val rejected = local.rejectedRegexes + if (options.cloud) cloud.rejectedRegexes else 0
-        if (rejected > 0) showNotice("$rejected 条格式无效或回溯过多的正则已跳过，请检查屏蔽规则")
+        if (rejected > 0) showNotice(graph.getString(R.string.player_danmaku_regex_skipped, rejected))
     }
 
     private fun loadDanmakuMetadata(myToken: Int) {
@@ -1860,7 +1872,7 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
                     } catch (e: CancellationException) { throw e }
                     catch (e: Exception) {
                         AppLog.w("Danmaku", "元数据未加载（${e.javaClass.simpleName}），普通弹幕和账号规则仍可用")
-                        if (myToken == token && dmFilter.allowInteraction) showNotice("互动弹幕未加载，普通弹幕仍生效")
+                        if (myToken == token && dmFilter.allowInteraction) showNotice(graph.getString(R.string.player_interaction_failed))
                     }
                 }
                 if (myToken != token || !dmOn) return@launch
@@ -1875,9 +1887,9 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
             } catch (e: CancellationException) { throw e }
             catch (e: Exception) {
                 if (myToken == token) {
-                    val reason = if (e is IllegalStateException) e.message else "网络或接口异常，本地屏蔽仍生效"
+                    val reason = if (e is IllegalStateException) e.message else graph.getString(R.string.player_cloud_fallback)
                     AppLog.w("Danmaku", "云屏蔽未加载：$reason（${e.javaClass.simpleName}）")
-                    showNotice("云屏蔽未加载：$reason")
+                    showNotice(graph.getString(R.string.player_cloud_failed, reason))
                 }
             }
         }
@@ -2069,7 +2081,7 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
                 if (!triedLiveRefetch) {
                     triedLiveRefetch = true
                     AppLog.w("VM", "直播失败（${e.errorCodeName}）-> 重新取流一次")
-                    showNotice("连接断了，正在重连…")
+                    showNotice(graph.getString(R.string.player_live_reconnecting))
                     error = null
                     val myToken = token
                     viewModelScope.launch {
@@ -2078,13 +2090,13 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
                         val line = fetchLiveLine()
                         if (myToken != token || line == null) return@launch
                         AppLog.i("VM", "重连：${line.protocol}/${line.format}/${line.codec}")
-                        codecLabel = "${line.codec.uppercase()} 直播"
+                        codecLabel = graph.getString(R.string.player_live_codec, line.codec.uppercase())
                         player.playLive(line.urls.first(), line.isHls)
                     }
                 } else {
                     error = PlayError(
-                        "直播断了",
-                        "已经重取过一次地址还是不行 —— 多半是主播下播了，或者本机网络断了。\n\n" +
+                        graph.getString(R.string.player_live_broken),
+                        graph.getString(R.string.player_live_broken_desc) + "\n\n" +
                             describeThrows(e) + "\n\n" + player.describeState(),
                     )
                 }
@@ -2129,7 +2141,7 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
                 renderedFirstFrame = true
                 if (live) pendingLiveLine?.let { line ->
                     activeLiveLine = line; pendingLiveLine = null
-                    codecLabel = "${line.codec.uppercase()} 直播"
+                    codecLabel = graph.getString(R.string.player_live_codec, line.codec.uppercase())
                     AppLog.i("Player", "直播实际画质=$qualityLabel（首帧确认）")
                 }
                 val actual = player.currentQuality()
@@ -2138,9 +2150,9 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
                     activeQuality = actual.qualityId
                     pendingQuality = null
                     autoQualityFrom?.let { previous ->
-                        val from = QualityOptions.compactLabel(previous, playInfo?.qualityLabels?.get(previous).orEmpty())
-                        showNotice(if (previous != actual.qualityId) "为保证流畅，画质由 $from 调至 $qualityLabel"
-                            else "画质调整未生效，继续使用 $qualityLabel")
+                        val from = compactQualityLabel(previous, playInfo?.qualityLabels?.get(previous).orEmpty())
+                        showNotice(if (previous != actual.qualityId) graph.getString(R.string.player_quality_auto_lowered, from, qualityLabel)
+                            else graph.getString(R.string.player_quality_not_applied, qualityLabel))
                         autoQualityFrom = null
                     }
                     AppLog.i("Player", "实际画质=$qualityLabel（首帧确认）")
@@ -2331,7 +2343,10 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
              */
             val webHealth = async {
                 runCatching { WebCookieMaintainer.ensureHealthyForPlay() }
-                    .onFailure { AppLog.w("VM", "起播前风控体检失败（不影响播放）：${it.javaClass.simpleName}") }
+                    .onFailure {
+                        if (it is CancellationException) throw it
+                        AppLog.w("VM", "起播前风控体检失败（不影响播放）：${it.javaClass.simpleName}")
+                    }
             }
 
             /*
@@ -2353,7 +2368,7 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
                 realCid = cid
                 if (realCid == 0L) {
                     AppLog.e("VM", "PGC 没有 cid")
-                    error = PlayError("拿不到剧集编号，无法播放")
+                    error = PlayError(graph.getString(R.string.player_pgc_no_cid))
                     return@launch
                 }
                 this@PlayerViewModel.cid = realCid
@@ -2362,11 +2377,11 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
                 if (play == null) {
                     AppLog.e("VM", "PGC playurl 返回空（未登录时属于正常现象，已登录=${graph.api.isLoggedIn()}）")
                     error = PlayError(
-                        if (graph.api.isLoggedIn()) "拿不到播放地址" else "番剧与影视需要登录后播放",
+                        if (graph.api.isLoggedIn()) graph.getString(R.string.player_no_play_url) else graph.getString(R.string.player_pgc_need_login),
                         if (graph.api.isLoggedIn()) {
-                            "PGC playurl 返回空或解析失败，可在高级模式的存储与日志页面查看诊断记录"
+                            graph.getString(R.string.player_play_url_empty_desc)
                         } else {
-                            "B 站对番剧/影视的取流要求带账号信息。回到上一页点「去登录」，扫码之后就能播。"
+                            graph.getString(R.string.player_pgc_need_login_desc)
                         },
                     )
                     return@launch
@@ -2407,7 +2422,7 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
                 realCid = if (cid != 0L) cid else detail?.cid ?: 0L
                 if (realCid == 0L) {
                     AppLog.e("VM", "详情里拿不到 cid")
-                    error = PlayError("拿不到 cid，无法播放")
+                    error = PlayError(graph.getString(R.string.player_no_cid))
                     return@launch
                 }
                 this@PlayerViewModel.cid = realCid
@@ -2423,15 +2438,15 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
             if (play == null) {
                 AppLog.e("VM", "playurl 返回空或解析失败")
                 val charged = catalogueDetail?.chargingExclusive == true
-                error = PlayError(if (charged) "充电专属视频暂时无法播放" else "拿不到播放地址",
-                    if (charged) "当前接口没有提供可播放的完整视频或试看片段，请在哔哩哔哩确认账号观看权限。"
-                    else "playurl 接口返回空或解析失败，可在高级模式的存储与日志页面查看诊断记录")
+                error = PlayError(if (charged) graph.getString(R.string.player_charged_unavailable) else graph.getString(R.string.player_no_play_url),
+                    if (charged) graph.getString(R.string.player_charged_desc)
+                    else graph.getString(R.string.player_play_url_empty_desc))
                 return@launch
             }
 
             try { top.bilitv.data.model.PlaybackPreview.requireBound(play) }
             catch (_: java.io.IOException) {
-                error = PlayError("暂时无法安全播放试看片段", "接口未提供明确的试看时限，请在哔哩哔哩确认观看权限。")
+                error = PlayError(graph.getString(R.string.player_preview_unsafe), graph.getString(R.string.player_preview_unsafe_desc))
                 return@launch
             }
 
@@ -2459,8 +2474,8 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
             if (selection == null) {
                 AppLog.e("VM", "${play.videos.size} 条视频流的编码/分辨率全部不被本机解码器接受")
                 error = PlayError(
-                    "这台设备解不了这个视频的任何清晰度",
-                    "共 ${play.videos.size} 条视频流，编码/分辨率全部不被本机解码器接受",
+                    graph.getString(R.string.player_no_decodable),
+                    graph.getString(R.string.player_no_decodable_desc, play.videos.size),
                 )
                 return@launch
             }
@@ -2470,13 +2485,14 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
                 val target = refreshAtMs.coerceIn(0, durationHintMs.takeIf { it > 0 } ?: refreshAtMs.coerceAtLeast(0))
                 player.exo.seekTo(target); samplePosition(target)
                 if (refreshPaused) player.exo.pause()
-                showNotice("播放地址已刷新")
+                showNotice(graph.getString(R.string.player_url_refreshed))
             } else if (!previewActive) resumeIfNeeded(resolvedKey, play.durationMs, ask = graph.settings.askResume && !directResume && !keepSpeed)
-            else showNotice("正在播放接口提供的试看片段")
+            else showNotice(graph.getString(R.string.player_preview_playing))
             startTicker(myToken)
             val socialToken = socialGeneration
             if (canInteract && graph.api.canWriteVideoActions()) launch {
-                val state = runCatching { graph.api.videoRelation(aid) }.getOrNull()
+                val state = runCatching { graph.api.videoRelation(aid) }
+                    .onFailure { if (it is CancellationException) throw it }.getOrNull()
                 if (myToken == token && socialToken == socialGeneration) relation = state
             }
             loadSegment(danmakuSegmentIndex(positionMs), myToken)
@@ -2504,7 +2520,10 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
                             }
                         }
                     }
-                }.onFailure { AppLog.w("VM", "连播：取剧集列表失败（不影响本集）：${it.javaClass.simpleName}") }
+                }.onFailure {
+                    if (it is CancellationException) throw it
+                    AppLog.w("VM", "连播：取剧集列表失败（不影响本集）：${it.javaClass.simpleName}")
+                }
                     .getOrNull()
                 if (myToken == token) nextTarget = next
             }
@@ -2637,7 +2656,7 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
             if (line == null) return@launch
 
             AppLog.i("VM", "选中直播线路：${line.protocol}/${line.format}/${line.codec} qn=${line.qn}")
-            codecLabel = "${line.codec.uppercase()} 直播"
+            codecLabel = graph.getString(R.string.player_live_codec, line.codec.uppercase())
             player.playLive(line.urls.first(), line.isHls)
             player.exo.playWhenReady = resumePlaying
             living = true
@@ -2655,8 +2674,8 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
         val play = graph.api.livePlayInfo(liveRoomId, requestedLiveQuality)
         if (play == null) {
             error = PlayError(
-                "拿不到直播地址",
-                "取流接口没返回可解析的数据（可能是接口变了或风控），可在高级模式的存储与日志页面查看诊断记录",
+                graph.getString(R.string.player_live_no_url),
+                graph.getString(R.string.player_live_no_url_desc),
             )
             return null
         }
@@ -2672,16 +2691,16 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
              * 而不是"当作在播、然后黑屏"。
              */
             error = PlayError(
-                if (play.liveStatus == LiveStatus.RERUN) "主播还没开播（当前在放录像）" else "主播还没开播",
-                "等主播开播后再进来就行。屏幕上这个不是错误，是直播间当前的状态。",
+                if (play.liveStatus == LiveStatus.RERUN) graph.getString(R.string.player_live_rerun) else graph.getString(R.string.player_live_offline),
+                graph.getString(R.string.player_live_offline_desc),
             )
             return null
         }
         val line = play.preferredLine()
         if (line == null) {
             error = PlayError(
-                "这个直播间没有可用的播放线路",
-                "取流接口给回了 ${play.lines.size} 条线路，但地址都拼不出来。可在高级模式的存储与日志页面查看诊断记录",
+                graph.getString(R.string.player_live_no_lines),
+                graph.getString(R.string.player_live_no_lines_desc, play.lines.size),
             )
             return null
         }
@@ -2738,7 +2757,7 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
         samplePosition(target)
         planner.onUserSeek()
         AppLog.i("VM", "续播到 ${target}ms")
-        showNotice(if (target == 0L) "已从头播放" else "已从上次的 ${formatDuration((target / 1000).toInt())} 继续播放")
+        showNotice(if (target == 0L) graph.getString(R.string.player_resumed_start) else graph.getString(R.string.player_resumed_from, formatDuration((target / 1000).toInt())))
     }
 
     /**
@@ -2818,7 +2837,7 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
 
     /** 起播并把"在播什么"记到界面上 —— 降级换编码后这里会跟着变，一眼能看出走到哪一级 */
     private fun startPlayback(sel: StreamSelector.Selection) {
-        codecLabel = "${codecFamily(sel.video.codecs)} ${QualityOptions.compactLabel(sel.video.qualityId, playInfo?.qualityLabels?.get(sel.video.qualityId).orEmpty(), sel.video.height)}"
+        codecLabel = "${codecFamily(sel.video.codecs)} ${compactQualityLabel(sel.video.qualityId, playInfo?.qualityLabels?.get(sel.video.qualityId).orEmpty(), sel.video.height)}"
         // 线路策略开关在**每次起播时**读一次：改完设置不用重启应用，下一个视频就生效
         applyEndAction()
         player.play(
@@ -2862,7 +2881,7 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
         startPlayback(selection)
         player.exo.seekTo(position)
         samplePosition(position)
-        showNotice("播放不够流畅，正在调整画质")
+        showNotice(graph.getString(R.string.player_quality_adjusting))
     }
 
     /**
@@ -2879,7 +2898,7 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
         val fromApp = playInfo?.source == top.bilitv.data.settings.VideoApiSource.APP
         if (cached == null && !fromApp) {
             error = PlayError(
-                title = "播放失败：${e.errorCodeName}",
+                title = graph.getString(R.string.player_play_failed, e.errorCodeName),
                 detail = describeThrows(e) + "\n\n" + player.describeState(),
             )
             return
@@ -2888,7 +2907,7 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
         val position = positionMs.coerceAtLeast(0)
         val wasPlaying = player.exo.playWhenReady
         AppLog.w("VM", "视频路走不通（当前 $current），换 AVC；缺少 App 兼容流时只请求 Web 一次")
-        showNotice("正在切换兼容编码")
+        showNotice(graph.getString(R.string.player_switching_avc))
         error = null
         // 先把错误态清干净（此时在主线程，可以直呼）
         player.exo.stop()
@@ -2917,10 +2936,10 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
                 }
             }
             if (fallback == null) {
-                error = PlayError("没有可用的兼容视频流", describeThrows(e) + "\n\n" + player.describeState())
+                error = PlayError(graph.getString(R.string.player_no_avc), describeThrows(e) + "\n\n" + player.describeState())
                 return@launch
             }
-            showNotice("这个视频的 ${codecFamily(current)} 播不了，已自动切到 AVC")
+            showNotice(graph.getString(R.string.player_avc_fallback, codecFamily(current)))
             startPlayback(fallback)
             player.exo.seekTo(position.coerceAtMost(durationHintMs.takeIf { it > 0 } ?: position))
             if (!wasPlaying) player.exo.pause()
@@ -2947,7 +2966,7 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
             )
             if (ok) {
                 error = null
-                showNotice("换了一批线路，正在重试")
+                showNotice(graph.getString(R.string.player_retry_sources))
             } else {
                 // 候选表里本来就没有 P2P 节点（或者已经滤过一轮）→ 这条退路等于没有
                 AppLog.w("VM", "没有可换的线路，直接走换编码那条")
@@ -2968,7 +2987,7 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
             fallbackToAvc(e)
         } else {
             error = PlayError(
-                title = "播放失败：${e.errorCodeName}",
+                title = graph.getString(R.string.player_play_failed, e.errorCodeName),
                 detail = describeThrows(e) + "\n\n" + player.describeState(),
             )
         }
@@ -3005,8 +3024,11 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
     private var liveDmJob: Job? = null
     var activeQuality by mutableIntStateOf(0)
         private set
-    val qualityLabel: String get() = if (live) activeLiveLine?.let { livePlayInfo?.qualities?.get(it.qn)?.substringBefore(' ') ?: "${it.qn}" } ?: "加载中"
-        else QualityOptions.compactLabel(activeQuality, playInfo?.qualityLabels?.get(activeQuality).orEmpty())
+    private fun compactQualityLabel(id: Int, sourceLabel: String = "", height: Int = 0): String =
+        if (id == 126) graph.getString(R.string.quality_dolby)
+        else QualityOptions.compactLabel(id, sourceLabel, height)
+    val qualityLabel: String get() = if (live) activeLiveLine?.let { livePlayInfo?.qualities?.get(it.qn)?.substringBefore(' ') ?: "${it.qn}" } ?: graph.getString(R.string.action_loading)
+        else compactQualityLabel(activeQuality, playInfo?.qualityLabels?.get(activeQuality).orEmpty())
     private data class PendingQuality(val selection: StreamSelector.Selection, val preference: Int?, val position: Long, val playing: Boolean)
     private var pendingQuality: PendingQuality? = null
     val availableQualities: List<Pair<Int, String>> get() {
@@ -3015,16 +3037,19 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
         return info.videos.filter { DecoderSupport.canDecodeVideo(videoMimeOf(it.codecs), it.width, it.height) &&
             (!(graph.settings.forceAvc || triedAvcFallback) || it.isAvc) }
             .distinctBy { it.qualityId }.sortedByDescending { it.qualityId }.map { video ->
-                video.qualityId to (info.qualityLabels[video.qualityId] ?: QualityOptions.ALL.firstOrNull { it.id == video.qualityId }?.label ?: "${video.height}P")
+                video.qualityId to (info.qualityLabels[video.qualityId]
+                    ?: qualityOptionLabelRes(video.qualityId)?.let { graph.getString(it) }
+                    ?: QualityOptions.ALL.firstOrNull { it.id == video.qualityId }?.label
+                    ?: "${video.height}P")
             }
     }
     fun openQuality() {
-        if (availableQualities.isEmpty()) showNotice("尚未取得可用画质，请稍后重试") else qualityDialog = true
+        if (availableQualities.isEmpty()) showNotice(graph.getString(R.string.player_quality_pending)) else qualityDialog = true
     }
     fun changeQuality(id: Int) {
         if (live) { changeLiveQuality(id); return }
         val info = playInfo ?: return
-        if (pendingQuality != null) { showNotice("画质正在切换，请稍候"); return }
+        if (pendingQuality != null) { showNotice(graph.getString(R.string.player_quality_switching)); return }
         if (id == activeQuality || availableQualities.none { it.first == id }) return
         val previousSelection = player.currentSelection() ?: return
         autoQualityFrom = null
@@ -3033,7 +3058,7 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
         val selection = pickSelection(info, onlyAvc = triedAvcFallback)
         if (selection == null || selection.video.qualityId != id) {
             adaptiveQuality = previous
-            showNotice("当前设备无法播放此画质")
+            showNotice(graph.getString(R.string.player_quality_unsupported))
             return
         }
         val position = player.exo.currentPosition.coerceAtLeast(0L)
@@ -3044,7 +3069,7 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
         player.exo.seekTo(position)
         player.exo.playWhenReady = wasPlaying
         samplePosition(position)
-        showNotice("正在切换画质")
+        showNotice(graph.getString(R.string.player_quality_switching_now))
     }
 
     private fun restorePreviousQuality() {
@@ -3062,14 +3087,14 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
             player.exo.seekTo(previous.position)
             player.exo.playWhenReady = previous.playing
             samplePosition(previous.position)
-            showNotice("画质切换失败，已退回 ${QualityOptions.compactLabel(previous.selection.video.qualityId)}")
+            showNotice(graph.getString(R.string.player_quality_failed, compactQualityLabel(previous.selection.video.qualityId)))
         }
     }
 
     private fun beginAction(): Boolean {
-        if (actionBusy) { showNotice("正在处理，请稍候"); return false }
-        if (!canInteract) { showNotice("当前内容不支持此操作"); return false }
-        if (!graph.api.canWriteVideoActions()) { showNotice("请先扫码登录后再操作"); return false }
+        if (actionBusy) { showNotice(graph.getString(R.string.player_busy)); return false }
+        if (!canInteract) { showNotice(graph.getString(R.string.player_action_unsupported)); return false }
+        if (!graph.api.canWriteVideoActions()) { showNotice(graph.getString(R.string.player_sign_in_first)); return false }
         actionBusy = true
         socialGeneration++
         return true
@@ -3086,15 +3111,16 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
                 relation = before
                 val message = block(target, before)
                 if (myToken != token) return@launch
-                val after = runCatching { graph.api.videoRelation(target) }.getOrNull()
+                val after = runCatching { graph.api.videoRelation(target) }
+                    .onFailure { if (it is CancellationException) throw it }.getOrNull()
                 if (myToken != token) return@launch
                 relation = after
-                showNotice(message + if (after == null) "；状态暂未刷新，请稍后查看" else "")
+                showNotice(message + if (after == null) graph.getString(R.string.player_state_stale) else "")
             } catch (e: CancellationException) { throw e }
             catch (e: Exception) {
                 if (myToken == token) {
                     relation = null
-                    showNotice(if (e is IllegalStateException || e is IllegalArgumentException) e.message ?: "操作失败" else "网络或接口异常，请刷新状态后再试")
+                    showNotice(if (e is IllegalStateException || e is IllegalArgumentException) e.message ?: graph.getString(R.string.player_action_failed) else graph.getString(R.string.player_network_error))
                 }
             } finally {
                 if (myToken == token) actionBusy = false
@@ -3104,19 +3130,19 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
     }
     fun toggleLike() = socialAction("点赞") { target, before ->
         graph.api.setVideoLike(target, !before.liked)
-        if (before.liked) "已取消点赞" else "已点赞"
+        if (before.liked) graph.getString(R.string.player_like_removed) else graph.getString(R.string.player_liked)
     }
     fun coin() = socialAction("投币") { target, before ->
         val count = coinsToAdd(before.coins, copyright)
-        if (count == 0) "这个视频已经投满币了" else {
+        if (count == 0) graph.getString(R.string.player_coin_full) else {
             graph.api.addVideoCoins(target, count)
-            "已投 $count 枚硬币"
+            graph.getString(R.string.player_coin_added, count)
         }
     }
     fun triple() = socialAction("三连") { target, _ ->
         val result = graph.api.tripleVideo(target)
-        val labels = listOf("like" to "点赞", "coin" to "投币", "fav" to "收藏")
-        labels.joinToString(" · ") { (key, label) -> "$label" + if (result.getBoolean(key)) "成功" else "未新增" }
+        val labels = listOf("like" to graph.getString(R.string.remote_like), "coin" to graph.getString(R.string.player_coin), "fav" to graph.getString(R.string.remote_favorite))
+        labels.joinToString(" · ") { (key, label) -> if (result.getBoolean(key)) graph.getString(R.string.player_triple_ok, label) else graph.getString(R.string.player_triple_new, label) }
     }
     fun openFavorites() {
         if (!beginAction()) return
@@ -3127,7 +3153,7 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
                 val folders = graph.api.videoFavoriteFolders(target)
                 if (myToken == token) favoriteFolders = folders
             } catch (e: CancellationException) { throw e }
-            catch (e: Exception) { if (myToken == token) showNotice(if (e is IllegalStateException) e.message ?: "收藏夹加载失败" else "收藏夹加载失败，请重试") }
+            catch (e: Exception) { if (myToken == token) showNotice(if (e is IllegalStateException) e.message ?: graph.getString(R.string.player_fav_folders_failed) else graph.getString(R.string.player_fav_folders_failed_retry)) }
             finally { if (myToken == token) actionBusy = false }
         }
     }
@@ -3140,13 +3166,13 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
         socialAction("收藏") { target, _ ->
             graph.api.setVideoFavorites(target, selected - original, original - selected)
             if (myToken == token) favoriteFolders = null
-            "已保存收藏夹"
+            graph.getString(R.string.player_fav_saved)
         }
     }
 
     /** Re-fetch signed URLs while preserving this viewing session's choices, not new defaults. */
     fun refreshStream() {
-        if (loadJob?.isActive == true) { showNotice("正在加载，请稍候"); return }
+        if (loadJob?.isActive == true) { showNotice(graph.getString(R.string.player_loading_wait)); return }
         finishTouchSeek(cancel = true); endTouchBoost()
         val wasPlaying = player.exo.playWhenReady
         val position = player.exo.currentPosition.coerceAtLeast(0)
@@ -3158,7 +3184,7 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
         } else if (cid > 0 && (bvid.isNotBlank() || epId > 0)) {
             load(bvid, cid, epId, title, cover, currentSeasonId, keepSpeed = true,
                 refreshAtMs = position, refreshPaused = !wasPlaying)
-        } else showNotice("视频信息还未加载完成")
+        } else showNotice(graph.getString(R.string.player_info_not_ready))
     }
 
     /** 手动切换和播完连播共用真实列表顺序，绝不以UP推荐冒充播放列表。 */
@@ -3178,7 +3204,7 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
     private fun playAdjacentTarget(target: NextTarget, manual: Boolean) {
         adjacentJob = null
         persistProgress(force = true); closeSidebar()
-        if (!manual) showNotice("即将播放：${target.title}")
+        if (!manual) showNotice(graph.getString(R.string.player_playing_next, target.title))
         load(target.bvid, target.cid, target.epId, target.title, target.cover,
             target.seasonId.takeIf { it > 0 } ?: currentSeasonId, keepSpeed = true)
     }
@@ -3186,36 +3212,36 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
     fun playAdjacent(step: Int, manual: Boolean = true) {
         adjacentJob?.cancel(); adjacentJob = null
         if (step != -1 && step != 1) return
-        if (live) { if (manual) showNotice("直播没有上一集或下一集"); return }
+        if (live) { if (manual) showNotice(graph.getString(R.string.player_live_no_next)); return }
         adjacentTarget(step)?.let { playAdjacentTarget(it, manual); return }
         val knownPlaylist = playlistId > 0 && playlistQueue.folderId == playlistId && playlistQueue.contains(bvid)
         if (step != 1 || !knownPlaylist || !playlistQueue.hasMore) {
             if (manual) showNotice(when {
-                playlistId > 0 && !knownPlaylist -> "请先打开播放列表加载当前视频所在的页面"
-                step < 0 && knownPlaylist && playlistQueue.truncated -> "前面的视频已不在缓存中，请打开播放列表选择"
-                step < 0 -> "没有上一个视频"
-                else -> "没有下一个视频"
+                playlistId > 0 && !knownPlaylist -> graph.getString(R.string.player_playlist_open_first)
+                step < 0 && knownPlaylist && playlistQueue.truncated -> graph.getString(R.string.player_playlist_truncated)
+                step < 0 -> graph.getString(R.string.player_no_previous)
+                else -> graph.getString(R.string.player_no_next)
             })
             return
         }
         closeSidebar()
         val requestedFolder = playlistId; val requestedBvid = bvid
         val myToken = token; val generation = sideGeneration
-        if (manual) showNotice("正在加载播放列表下一页…")
+        if (manual) showNotice(graph.getString(R.string.player_playlist_loading_next))
         adjacentJob = viewModelScope.launch {
             try {
                 val item = playlistQueue.next(requestedBvid) { page ->
-                    val result = graph.api.favResourcePage(requestedFolder, page) ?: error("播放列表下一页加载失败，可重试")
+                    val result = graph.api.favResourcePage(requestedFolder, page) ?: error(graph.getString(R.string.player_playlist_page_failed))
                     if (myToken != token || generation != sideGeneration || requestedFolder != playlistId ||
                         (!manual && !graph.settings.autoNext)) throw CancellationException()
                     result
                 }
                 if (myToken != token || generation != sideGeneration) return@launch
                 if (item != null) playAdjacentTarget(item.sideTarget(), manual)
-                else if (playlistQueue.hasMore) showNotice("后续页暂无可播放视频，可再按下一项或打开播放列表")
-                else if (manual) showNotice("没有下一个视频")
+                else if (playlistQueue.hasMore) showNotice(graph.getString(R.string.player_playlist_no_more))
+                else if (manual) showNotice(graph.getString(R.string.player_no_next))
             } catch (e: CancellationException) { throw e }
-            catch (e: Exception) { if (myToken == token && generation == sideGeneration) showNotice(e.message ?: "播放列表加载失败，可重试") }
+            catch (e: Exception) { if (myToken == token && generation == sideGeneration) showNotice(e.message ?: graph.getString(R.string.player_playlist_failed)) }
             finally { if (myToken == token && generation == sideGeneration) adjacentJob = null }
         }
     }
@@ -3300,7 +3326,7 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
     val liveLines: List<Pair<top.bilitv.data.model.LiveStreamLine, Int>> get() = livePlayInfo?.lines.orEmpty()
         .flatMap { line -> line.urls.indices.map { line to it } }
     fun openLiveLines() {
-        if (liveLines.isEmpty()) showNotice("尚未取得直播线路") else liveLineDialog = true
+        if (liveLines.isEmpty()) showNotice(graph.getString(R.string.player_live_no_lines_yet)) else liveLineDialog = true
     }
     fun useLiveLine(line: top.bilitv.data.model.LiveStreamLine, index: Int) {
         if (!live || index !in line.urls.indices) return
@@ -3316,10 +3342,10 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
                 val result = graph.api.livePlayInfo(liveRoomId, id)
                 if (myToken != token) return@launch
                 val line = result?.preferredLine()
-                if (line == null || result.liveStatus != LiveStatus.LIVING) { showNotice("未取得该画质，继续当前播放"); return@launch }
+                if (line == null || result.liveStatus != LiveStatus.LIVING) { showNotice(graph.getString(R.string.player_quality_not_obtained)); return@launch }
                 livePlayInfo = result; requestedLiveQuality = id
                 useLiveLine(line, 0)
-                if (line.qn != id) showNotice("服务器返回较低画质，显示将随实际播放更新")
+                if (line.qn != id) showNotice(graph.getString(R.string.player_quality_server_lower))
             } finally { liveChanging = false }
         }
     }
@@ -3344,7 +3370,7 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
                 catch (e: Exception) { AppLog.w("LiveDanmaku", "连接中断 ${e.javaClass.simpleName}，重试${attempt + 1}/3") }
                 delay((attempt + 1) * 2000L)
             }
-            showNotice("直播弹幕连接失败，切换弹幕开关可重试")
+            showNotice(graph.getString(R.string.player_live_danmaku_failed))
         }
     }
 
@@ -3367,7 +3393,7 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
         if (!live) graph.settings.rememberSpeedForUp(ownerMid, speedIndex)
         val v = PlaybackTuning.speedOf(speedIndex)
         player.setSpeed(v)
-        showNotice("倍速 ${PlaybackTuning.formatSpeed(v)}")
+        showNotice(graph.getString(R.string.player_speed_label, PlaybackTuning.formatSpeed(v)))
         AppLog.i("VM", "倍速 -> ${PlaybackTuning.formatSpeed(v)}")
     }
 
@@ -3382,8 +3408,8 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
 
     fun cycleAspect() {
         aspectId = PlaybackTuning.nextAspectId(aspectId)
-        val label = PlaybackTuning.aspectOf(aspectId).label
-        showNotice("画面 $label")
+        val label = graph.getString(aspectLabelRes(aspectId))
+        showNotice(graph.getString(R.string.player_aspect_toast, label))
         AppLog.i("VM", "画面比例 -> $aspectId ($label)")
     }
 
@@ -3485,7 +3511,7 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
         if (live || !playing || buffering || previewEnded || resumeChoiceMs != null) return
         when (val decision = planner.onPosition(positionMs, durationMs, SystemClock.elapsedRealtime())) {
             is SkipPlanner.Decision.Armed ->
-                skipHint = "${decision.segment.category.label} · 即将跳过"
+                skipHint = graph.getString(R.string.player_skip_hint, graph.getString(decision.segment.category.labelRes()))
 
             is SkipPlanner.Decision.Skip -> {
                 skipHint = null

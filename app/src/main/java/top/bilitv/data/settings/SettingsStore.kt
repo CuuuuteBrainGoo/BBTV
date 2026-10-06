@@ -34,6 +34,10 @@ class SettingsStore(context: Context) {
     private val prefs: SharedPreferences =
         context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
 
+    var interfaceLanguage: UiLanguage
+        get() = UiLanguage.of(prefs.getString("ui_language", null))
+        set(v) = prefs.edit().putString("ui_language", v.tag).apply()
+
     var backgroundStyle: BackgroundStyle
         get() = BackgroundStyle.of(prefs.getString("ui_background_style", null))
         set(v) = prefs.edit().putString("ui_background_style", v.name).apply()
@@ -79,9 +83,6 @@ class SettingsStore(context: Context) {
     var interfaceFontScale: Float
         get() = InterfaceTuning.font(prefs.getFloat("ui_font_scale", 1f))
         set(v) = prefs.edit().putFloat("ui_font_scale", InterfaceTuning.font(v)).apply()
-    var cardMenuOnMenuKey: Boolean
-        get() = prefs.getBoolean("ui_card_menu", true)
-        set(v) = prefs.edit().putBoolean("ui_card_menu", v).apply()
     var rightToCards: Boolean
         get() = prefs.getBoolean("ui_right_cards", false)
         set(v) = prefs.edit().putBoolean("ui_right_cards", v).apply()

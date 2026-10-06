@@ -12,6 +12,7 @@ import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
 import top.bilitv.BiliTvApp
+import top.bilitv.R
 import top.bilitv.data.model.VideoDetail
 
 /*
@@ -65,7 +66,7 @@ class DetailViewModel(app: Application) : AndroidViewModel(app) {
                 detail = d; error = null
             } catch (e: CancellationException) { throw e }
             catch (e: Exception) {
-                if (g == generation) error = "拿不到视频详情，请重试（内容可能已失效或暂时不可用）"
+                if (g == generation) error = graph.getString(R.string.detail_load_failed)
             } finally { if (g == generation) loading = false }
         }
     }

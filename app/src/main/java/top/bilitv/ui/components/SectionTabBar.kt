@@ -26,10 +26,12 @@ import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
+import top.bilitv.R
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -100,6 +102,7 @@ fun SectionTabBar(
         itemsIndexed(labels) { index, label ->
             val selected = index == selectedIndex
             var focused by remember(label) { mutableStateOf(false) }
+            val selectedSuffix = if (selected) stringResource(R.string.tab_selected_suffix) else ""
 
             val background = when {
                 focused -> theme.focusFill
@@ -138,7 +141,7 @@ fun SectionTabBar(
                         shape = shape,
                     )
                     .semantics(mergeDescendants = true) {
-                        contentDescription = label + if (selected) "，当前选中" else ""
+                        contentDescription = label + selectedSuffix
                     }
                     .clickable(
                         interactionSource = remember { MutableInteractionSource() },

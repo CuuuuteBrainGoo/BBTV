@@ -38,6 +38,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -98,6 +99,10 @@ fun PgcDetailScreen(
     DisposableEffect(vm) { onDispose { vm.stopLoading() } }
     val gridState = androidx.compose.foundation.lazy.grid.rememberLazyGridState()
     val theme = AppTheme.current
+    // 进入页面后要把焦点主动送到「播放第一集」；剧集为空时没有播放键，
+    // 改送到常驻的返回按钮（与 DetailScreen 成功分支同源）。
+    val playFocus = remember { FocusRequester() }
+    val backFocus = remember { FocusRequester() }
 
     Box(modifier = Modifier.fillMaxSize().background(theme.pageBackground)) {
         val detail = vm.detail
@@ -119,6 +124,7 @@ fun PgcDetailScreen(
                 item(span = { GridItemSpan(maxLineSpan) }, key = "hero") {
                     SeasonHeader(
                         detail = detail,
+                        playFocus = playFocus,
                         onPlayFirst = {
                             detail.episodes.firstOrNull()?.let {
                                 onPlayEpisode(it.epId, it.cid, detail.playbackTitle(it), it.cover)
@@ -154,6 +160,16 @@ fun PgcDetailScreen(
             )
         }
 
+        // 只有数据到位才请求；key 取数据到位后才稳定的值，普通重组/选集不会重复抢焦点。
+        if (detail != null) {
+            if (detail.episodes.isNotEmpty()) {
+                top.bilitv.ui.components.RequestFocusOnAppear(playFocus, detail.episodes.first().epId)
+            } else {
+                // 空剧集时播放键不渲染，绝不对未 attach 的 playFocus 发请求。
+                top.bilitv.ui.components.RequestFocusOnAppear(backFocus, detail.seasonId)
+            }
+        }
+
         if (detail != null && (vm.loading || vm.message.isNotEmpty())) LoadFeedback(
             vm.loading, vm.message.takeIf { it.isNotEmpty() }, vm::retry,
             Modifier.align(Alignment.BottomCenter).padding(theme.screenPadding).background(theme.surfaceHigh),
@@ -161,7 +177,7 @@ fun PgcDetailScreen(
 
         BackChip(
             onBack = onBack,
-            modifier = Modifier.align(Alignment.TopStart).padding(theme.screenPadding),
+            modifier = Modifier.align(Alignment.TopStart).padding(theme.screenPadding).focusRequester(backFocus),
         )
     }
 }
@@ -173,7 +189,7 @@ fun PgcDetailScreen(
  * 详情页的简介需要横向空间，"留白一半给画面"在这里会让简介被切成三条。
  */
 @Composable
-private fun SeasonHeader(detail: PgcDetail, onPlayFirst: () -> Unit) {
+private fun SeasonHeader(detail: PgcDetail, playFocus: FocusRequester, onPlayFirst: () -> Unit) {
     val theme = AppTheme.current
     val context = LocalContext.current
 
@@ -259,7 +275,9 @@ private fun SeasonHeader(detail: PgcDetail, onPlayFirst: () -> Unit) {
                 FilledActionButton(
                     text = stringResource(R.string.cinema_play_first),
                     onClick = onPlayFirst,
-                    modifier = Modifier.padding(top = 6.dp),
+                    // focusRequester 必须排在 FilledActionButton 内部的 focusRing 之前，
+                    // 否则会静默挂不上（FocusRing.kt 硬约束 1）。
+                    modifier = Modifier.padding(top = 6.dp).then(Modifier.focusRequester(playFocus)),
                 )
             }
         }

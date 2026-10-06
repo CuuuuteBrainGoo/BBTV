@@ -12,9 +12,9 @@ import androidx.security.crypto.MasterKey
  * 优先 EncryptedSharedPreferences；设备不支持时退化为应用私有 SharedPreferences
  * （仍受 Android 应用沙箱保护，其他应用读不到）。
  */
-class CredentialStore(context: Context) {
+class CredentialStore internal constructor(private val prefs: SharedPreferences) {
 
-    private val prefs: SharedPreferences = try {
+    constructor(context: Context) : this(try {
         val masterKey = MasterKey.Builder(context)
             .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
             .build()
@@ -28,7 +28,7 @@ class CredentialStore(context: Context) {
     } catch (t: Throwable) {
         // ponytail: 低端盒子 Keystore 不可用时降级，此处不抛异常以免启动崩溃
         context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-    }
+    })
 
     var sessdata: String?
         get() = prefs.getString(KEY_SESSDATA, null)
@@ -60,6 +60,14 @@ class CredentialStore(context: Context) {
         if (!j.isNullOrBlank()) append("bili_jct=$j; ")
         if (!u.isNullOrBlank()) append("DedeUserID=$u; ")
     }.trimEnd(' ', ';')
+
+    /** Replace the account as one preference edit; a Web login has no App access key. */
+    fun replaceLogin(cookies: Map<String, String>, appAccessKey: String? = null) = prefs.edit()
+        .putString(KEY_SESSDATA, cookies[KEY_SESSDATA])
+        .putString(KEY_JCT, cookies[KEY_JCT])
+        .putString(KEY_UID, cookies[KEY_UID])
+        .putString(KEY_ACCESS_KEY, appAccessKey?.takeIf { it.isNotBlank() })
+        .apply()
 
     fun clear() = prefs.edit().clear().apply()
 
